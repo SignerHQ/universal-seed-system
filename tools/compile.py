@@ -310,12 +310,47 @@ def compile_lookup():
     for word, sources in word_sources.items():
         lookup[word] = sources[0][0]
 
+    # Build languages section: {code: {label, words: {idx: first_word}}}
+    languages = {}
+    for lang_file in lang_files:
+        if lang_file == "base" or lang_file.startswith("_"):
+            continue
+        try:
+            mod = importlib.import_module(f"languages.{lang_file}")
+        except Exception:
+            continue
+        seed_words = getattr(mod, "SEED_WORDS", None)
+        if seed_words is None:
+            continue
+        label = getattr(mod, "LABEL", lang_file.replace("_", " ").title())
+        words_map = {}
+        for idx, word_list in seed_words.items():
+            if word_list:
+                words_map[str(int(idx))] = word_list[0]
+        languages[lang_file] = {"label": label, "words": words_map}
+
+    print(f"\nLanguages embedded: {len(languages)}")
+    for code in sorted(languages):
+        print(f"  {code}: {languages[code]['label']} ({len(languages[code]['words'])} words)")
+
+    # Save words.json with lookup + languages
+    output = {"lookup": lookup, "languages": languages}
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(lookup, f, ensure_ascii=False, indent=None, separators=(",", ":"))
+        json.dump(output, f, ensure_ascii=False, indent=None, separators=(",", ":"))
 
     size_kb = os.path.getsize(OUTPUT_FILE) / 1024
     print(f"\nSaved {OUTPUT_FILE}")
-    print(f"  {len(lookup)} entries, {size_kb:.1f} KB")
+    print(f"  {len(lookup)} lookup entries + {len(languages)} languages, {size_kb:.1f} KB")
+
+    # Generate SHA-256
+    import hashlib
+    sha_path = OUTPUT_FILE + ".sha256"
+    with open(OUTPUT_FILE, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    with open(sha_path, "w", encoding="utf-8") as f:
+        f.write(f"{digest}  words.json\n")
+    print(f"  SHA-256: {digest}")
+    print(f"  Saved {sha_path}")
 
     return len(collisions) == 0
 

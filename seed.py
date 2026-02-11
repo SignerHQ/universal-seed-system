@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Signer — MIT License
 
-__version__ = "1.2"
+__version__ = "1.3"
 
 """Seed generation for the Universal Seed System.
 
@@ -95,6 +95,34 @@ _BASE_WORDS = (
 )
 _BASE = {i: w for i, w in enumerate(_BASE_WORDS)}
 
+# ── Language support (loaded from words.json at module level below) ──
+_LANGUAGES = {}  # populated after words.json is loaded
+
+
+def _load_language(code):
+    """Return {index: first_word} for a language code."""
+    lang = _LANGUAGES.get(code)
+    if lang is None:
+        raise ValueError(f"Unknown language: {code!r}")
+    return {int(k): v for k, v in lang["words"].items()}
+
+
+def get_languages():
+    """Return available seed languages as a list of (code, label) tuples.
+
+    Example::
+
+        get_languages()
+        # [("english", "English"), ("arabic", "العربية"), ("french", "Français"), ...]
+    """
+    results = [("english", "English")]
+    for code in sorted(_LANGUAGES):
+        if code == "english":
+            continue
+        results.append((code, _LANGUAGES[code]["label"]))
+    return results
+
+
 # Domain separator — ensures keys from this system can never collide
 # with keys derived by other systems using the same hash functions.
 _DOMAIN = b"universal-seed-v1"
@@ -113,7 +141,14 @@ _SEED_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOOKUP_FILE = os.path.join(_SEED_DIR, "words.json")
 
 with open(_LOOKUP_FILE, "r", encoding="utf-8") as _f:
-    _LOOKUP = json.load(_f)
+    _WORDS_DATA = json.load(_f)
+
+# Support both old flat format and new structured format
+if "lookup" in _WORDS_DATA and "languages" in _WORDS_DATA:
+    _LOOKUP = _WORDS_DATA["lookup"]
+    _LANGUAGES = _WORDS_DATA["languages"]
+else:
+    _LOOKUP = _WORDS_DATA
 
 _SORTED_KEYS = sorted(_LOOKUP.keys())
 _INDEX_TO_BASE = _BASE  # index -> base English word
@@ -678,7 +713,7 @@ _MAX_ENTROPY_RETRIES = 10
 _VALIDATION_SAMPLE_SIZE = 1024  # bytes — large enough for statistical tests
 
 
-def generate_words(word_count=32, extra_entropy=None):
+def generate_words(word_count=32, extra_entropy=None, language=None):
     """Generate a cryptographically secure seed.
 
     All words are pure entropy — nothing is wasted on checksums.
@@ -692,17 +727,25 @@ def generate_words(word_count=32, extra_entropy=None):
     Args:
         word_count: 16 (128-bit) or 32 (256-bit)
         extra_entropy: Optional bytes to mix in (e.g. from mouse_entropy.digest()).
+        language: Optional language code (e.g. "french", "arabic").
+                  None or "english" returns English words.
 
     Returns:
         List of (index, word) tuples.
 
     Raises:
-        ValueError: If word_count is not 16 or 32.
+        ValueError: If word_count is not 16 or 32, or language is unknown.
         RuntimeError: If all 10 entropy attempts fail validation
                       (indicates a compromised or broken RNG).
     """
     if word_count not in (16, 32):
         raise ValueError("word_count must be 16 or 32")
+
+    # Resolve word map for requested language
+    if language and language != "english":
+        word_map = _load_language(language)
+    else:
+        word_map = _BASE
 
     for _ in range(_MAX_ENTROPY_RETRIES):
         # Validate the entropy pipeline with a large sample (1024 bytes)
@@ -714,7 +757,7 @@ def generate_words(word_count=32, extra_entropy=None):
             # Pipeline is healthy — now generate the actual seed
             entropy = _collect_entropy(word_count, extra_entropy)
             indexes = list(entropy)
-            return [(idx, _BASE[idx]) for idx in indexes]
+            return [(idx, word_map[idx]) for idx in indexes]
 
     raise RuntimeError(
         f"Entropy failed validation {_MAX_ENTROPY_RETRIES} times — "

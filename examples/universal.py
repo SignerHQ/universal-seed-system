@@ -14,12 +14,12 @@ sys.path.insert(0, PROJECT_DIR)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QScrollArea, QFrame, QListWidget, QListWidgetItem,
-    QGridLayout, QPushButton, QProgressBar,
+    QGridLayout, QPushButton, QProgressBar, QComboBox,
 )
 from PySide6.QtCore import Qt, QSize, QEvent, QPoint, QRect, Signal, QTimer
 from PySide6.QtGui import QPixmap, QIcon, QPainter, QPainterPath, QCursor
 
-from seed import generate_words, get_fingerprint, get_private_key, get_entropy_bits, mouse_entropy, resolve, search, verify_randomness
+from seed import generate_words, get_fingerprint, get_private_key, get_entropy_bits, mouse_entropy, resolve, search, verify_randomness, get_languages
 from languages.base import signer_universal_seed_base
 
 ICONS_DIR = os.path.join(PROJECT_DIR, "visuals", "png")
@@ -687,8 +687,8 @@ class SeedTestWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Universal Seed System")
-        self.setMinimumSize(500, 600)
-        self.resize(540, 820)
+        self.setMinimumSize(620, 600)
+        self.resize(640, 820)
         self.setStyleSheet(STYLE)
         self.word_count = 32
         self._base_indexes = None  # Original indexes before passphrase transform
@@ -799,7 +799,7 @@ class SeedTestWindow(QMainWindow):
         main_layout.addWidget(mouse_frame)
         main_layout.addSpacing(8)
 
-        # Controls row: [16] [32]  [Copy] [Paste] [Clear]  ... [Generate]
+        # Controls row 1: [16] [32]  [Copy] [Paste] [Clear]
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(6)
@@ -843,7 +843,23 @@ class SeedTestWindow(QMainWindow):
 
         controls.addStretch()
 
+        self.lang_combo = QComboBox()
+        self.lang_combo.setFixedSize(130, 28)
+        self.lang_combo.setCursor(Qt.PointingHandCursor)
+        self.lang_combo.setStyleSheet(
+            "QComboBox { background: #e8e8f0; color: #6a6a80; border: none;"
+            " border-radius: 10px; font-size: 12px; font-weight: 500; padding: 4px 10px; }"
+            "QComboBox:hover { background: #dcdce8; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox::down-arrow { image: none; }"
+        )
+        for code, label in get_languages():
+            self.lang_combo.addItem(label, code)
+        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
+        controls.addWidget(self.lang_combo)
+
         self.generate_btn = QPushButton("Generate")
+        self.generate_btn.setMinimumWidth(100)
         self.generate_btn.setFixedHeight(28)
         self.generate_btn.setCursor(Qt.PointingHandCursor)
         self.generate_btn.setStyleSheet(GENERATE_BTN)
@@ -1252,17 +1268,24 @@ class SeedTestWindow(QMainWindow):
                 row.hide()
         self._update_status()
 
+    # ── language change ─────────────────────────────────────
+    def _on_language_changed(self, index):
+        """Auto-regenerate the seed when the user picks a different language."""
+        if self._base_indexes is not None:
+            self._generate_seed()
+
     # ── generate seed ─────────────────────────────────────
     def _generate_seed(self):
         # Mix in mouse entropy if collected
         extra = self._mouse_pool.digest() if self._mouse_pool.sample_count > 0 else None
-        seed = generate_words(self.word_count, extra_entropy=extra)
+        lang_code = self.lang_combo.currentData()
+        language = lang_code if lang_code != "english" else None
+        seed = list(generate_words(self.word_count, extra_entropy=extra, language=language))
         self._base_indexes = [idx for idx, word in seed]
 
-        # Display the base words (passphrase affects key, not words)
-        for i, idx in enumerate(self._base_indexes):
+        # Display the words (use translated word from seed, not BASE_LOOKUP)
+        for i, (idx, word) in enumerate(seed):
             row = self.rows[i]
-            _, word = BASE_LOOKUP.get(idx, ("?", "?"))
             row._block = True
             row.input.setText(word)
             row._block = False
