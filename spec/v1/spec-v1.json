@@ -1,0 +1,97 @@
+{
+  "version": "1",
+  "status": "frozen",
+  "domain_separator": "universal-seed-v1",
+
+  "seed": {
+    "word_counts": [16, 32],
+    "entropy_bits": { "16": 128, "32": 256 },
+    "checksum": null,
+    "encoding": "Each index is a single byte (0-255). Seed = bytes(indexes)."
+  },
+
+  "icon_set": {
+    "count": 256,
+    "index_range": [0, 255],
+    "bits_per_icon": 8,
+    "asset_format": ["png", "svg"],
+    "asset_style": "Fluent Emoji flat",
+    "note": "Icons are identified by index, not filename. Filenames are cosmetic."
+  },
+
+  "passphrase": {
+    "normalization": "none",
+    "encoding": "raw UTF-8 bytes",
+    "empty_passphrase": "equivalent to no passphrase (zero bytes appended)"
+  },
+
+  "kdf_pipeline": {
+    "layers": 5,
+
+    "layer_1_positional_binding": {
+      "format": "little-endian (pos, index) byte pairs",
+      "struct_format": "<BB",
+      "description": "payload = concat(pack('<BB', pos, idx) for pos, idx in enumerate(indexes))"
+    },
+
+    "layer_2_passphrase_mixing": {
+      "description": "Append passphrase.encode('utf-8') to payload if non-empty"
+    },
+
+    "layer_3_hkdf_extract": {
+      "algorithm": "HMAC-SHA512",
+      "key": "universal-seed-v1",
+      "message": "positional payload + optional passphrase bytes",
+      "output_bytes": 64
+    },
+
+    "layer_4_chained_kdf": {
+      "stage_1_pbkdf2": {
+        "algorithm": "PBKDF2-SHA512",
+        "salt": "universal-seed-v1-stretch-pbkdf2",
+        "iterations": 600000,
+        "dklen": 64
+      },
+      "stage_2_argon2id": {
+        "algorithm": "Argon2id",
+        "salt": "universal-seed-v1-stretch-argon2id",
+        "time_cost": 3,
+        "memory_cost_kb": 65536,
+        "parallelism": 4,
+        "hash_len": 64
+      }
+    },
+
+    "layer_5_hkdf_expand": {
+      "algorithm": "HMAC-SHA512",
+      "info": "universal-seed-v1-master",
+      "output_bytes": 64
+    }
+  },
+
+  "fingerprint": {
+    "without_passphrase": {
+      "algorithm": "HMAC-SHA512",
+      "key": "universal-seed-v1",
+      "message": "positional payload (same as layer 1)",
+      "output": "first 2 bytes, hex uppercase",
+      "length_chars": 4,
+      "length_bits": 16
+    },
+    "with_passphrase": {
+      "algorithm": "full KDF pipeline output",
+      "output": "first 2 bytes of master key, hex uppercase",
+      "length_chars": 4,
+      "length_bits": 16
+    }
+  },
+
+  "word_resolution": {
+    "lookup_file": "words.json",
+    "total_keys": 38730,
+    "languages": 42,
+    "normalization": "NFKC + lowercase + invisible char stripping",
+    "strict_mode": false,
+    "fuzzy_fallbacks": ["diacritic_stripping", "article_prefix_stripping", "article_suffix_stripping"]
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "version": "2",
+  "status": "active",
+  "domain_separator": "universal-seed-v2",
+
+  "seed": {
+    "word_counts": [24, 36],
+    "data_words": { "24": 22, "36": 34 },
+    "checksum_words": 2,
+    "entropy_bits": { "24": 176, "36": 272 },
+    "encoding": "First N-2 indexes are data (random entropy), last 2 are checksum. Each index is a byte (0-255)."
+  },
+
+  "checksum": {
+    "algorithm": "HMAC-SHA-256",
+    "key": "universal-seed-v2-checksum",
+    "key_bytes": 25,
+    "message": "data indexes as raw bytes (excluding checksum words)",
+    "output": "first 2 bytes of HMAC digest",
+    "error_detection_bits": 16,
+    "false_positive_rate": "1-in-65536"
+  },
+
+  "icon_set": {
+    "count": 256,
+    "index_range": [0, 255],
+    "bits_per_icon": 8,
+    "asset_format": ["png", "svg"],
+    "asset_style": "Fluent Emoji flat",
+    "note": "Identical to v1. Icons are identified by index, not filename."
+  },
+
+  "passphrase": {
+    "normalization": "none",
+    "encoding": "raw UTF-8 bytes",
+    "empty_passphrase": "equivalent to no passphrase (zero bytes appended)"
+  },
+
+  "kdf_pipeline": {
+    "layers": 6,
+    "note": "Layer 0 is checksum verification/stripping. Layers 1-5 use the same algorithms as v1 but with universal-seed-v2 domain separator.",
+
+    "layer_0_checksum": {
+      "description": "Verify last 2 indexes match HMAC-SHA-256 checksum, then strip them",
+      "input": "full seed (24 or 36 indexes)",
+      "output": "data indexes only (22 or 34 indexes)",
+      "on_failure": "reject with error — do not proceed to KDF"
+    },
+
+    "layer_1_positional_binding": {
+      "format": "little-endian (pos, index) byte pairs",
+      "struct_format": "<BB",
+      "description": "payload = concat(pack('<BB', pos, idx) for pos, idx in enumerate(data_indexes))"
+    },
+
+    "layer_2_passphrase_mixing": {
+      "description": "Append passphrase.encode('utf-8') to payload if non-empty"
+    },
+
+    "layer_3_hkdf_extract": {
+      "algorithm": "HMAC-SHA512",
+      "key": "universal-seed-v2",
+      "message": "positional payload + optional passphrase bytes",
+      "output_bytes": 64
+    },
+
+    "layer_4_chained_kdf": {
+      "stage_1_pbkdf2": {
+        "algorithm": "PBKDF2-SHA512",
+        "salt": "universal-seed-v2-stretch-pbkdf2",
+        "iterations": 600000,
+        "dklen": 64
+      },
+      "stage_2_argon2id": {
+        "algorithm": "Argon2id",
+        "salt": "universal-seed-v2-stretch-argon2id",
+        "time_cost": 3,
+        "memory_cost_kb": 65536,
+        "parallelism": 4,
+        "hash_len": 64
+      }
+    },
+
+    "layer_5_hkdf_expand": {
+      "algorithm": "HMAC-SHA512",
+      "info": "universal-seed-v2-master",
+      "output_bytes": 64
+    }
+  },
+
+  "fingerprint": {
+    "without_passphrase": {
+      "algorithm": "HMAC-SHA512",
+      "key": "universal-seed-v2",
+      "message": "positional payload of data indexes (checksum stripped)",
+      "output": "first 4 bytes, hex uppercase",
+      "length_chars": 8,
+      "length_bits": 32
+    },
+    "with_passphrase": {
+      "algorithm": "full KDF pipeline output",
+      "output": "first 4 bytes of master key, hex uppercase",
+      "length_chars": 8,
+      "length_bits": 32
+    }
+  },
+
+  "word_resolution": {
+    "lookup_file": "words.json",
+    "total_keys": 38730,
+    "languages": 42,
+    "normalization": "NFKC + lowercase + invisible char stripping",
+    "strict_mode": true,
+    "strict_description": "_to_indexes() uses strict=True: exact lookup + emoji match only, no fuzzy fallbacks",
+    "fuzzy_fallbacks": ["diacritic_stripping", "article_prefix_stripping", "article_suffix_stripping"],
+    "fuzzy_note": "Fuzzy fallbacks are available in resolve(strict=False) for UI/recovery only"
+  },
+
+  "compatibility": {
+    "v1_domain_separator": "universal-seed-v1 (different from v2)",
+    "v1_kdf_pipeline": "different — v2 uses universal-seed-v2 domain, producing different keys",
+    "v1_migration": "not supported — different domain separators, word counts, and checksum requirements"
+  }
+}

@@ -4,12 +4,12 @@
 
 ### The world's first visual + multilingual seed phrase system
 
-**256-bit entropy** · **42 languages** · **256 icons** · **One universal standard**
+**272-bit entropy** · **42 languages** · **256 icons** · **16-bit checksum** · **One universal standard**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-42-blueviolet?style=for-the-badge)](#-supported-languages)
 [![Icons](https://img.shields.io/badge/Visual_Icons-256-orange?style=for-the-badge)](#-visual-icon-library)
-[![Entropy](https://img.shields.io/badge/Entropy-256_bit-brightgreen?style=for-the-badge)](#-entropy)
+[![Entropy](https://img.shields.io/badge/Entropy-272_bit-brightgreen?style=for-the-badge)](#-entropy)
 [![Lookup Keys](https://img.shields.io/badge/Lookup_Keys-38,730-red?style=for-the-badge)](#-word-lookup-system)
 
 <br>
@@ -53,7 +53,8 @@ The Universal Seed System takes a fundamentally different approach:
 |---|:---:|:---:|
 | Words per position | 1 | **Multiple** (synonyms, slang, abbreviations) |
 | Languages | 10 | **42** |
-| Visual recovery | :x: | :white_check_mark: **Select 32 icons directly** |
+| Visual recovery | :x: | :white_check_mark: **Select 36 icons directly** |
+| Checksum | 4–8 bit | :white_check_mark: **16-bit** |
 | Paper backup recognizable as crypto? | :warning: Yes | :shield: **No** — looks like random notes |
 | Mixed-language backup | :x: | :white_check_mark: Write in any combination |
 | Accent/diacritic flexible | :x: | :white_check_mark: `corazón` = `corazon` |
@@ -66,8 +67,8 @@ The Universal Seed System takes a fundamentally different approach:
 ## How It Works
 
 ```
-32 words from 256 possible positions = 256 bits of entropy (2²⁵⁶ combinations)
-16 words from 256 possible positions = 128 bits of entropy (2¹²⁸ combinations)
+36 words = 34 random + 2 checksum = 272 bits of entropy (2²⁷² combinations)
+24 words = 22 random + 2 checksum = 176 bits of entropy (2¹⁷⁶ combinations)
 ```
 
 <table>
@@ -81,7 +82,7 @@ The Universal Seed System takes a fundamentally different approach:
 </tr>
 <tr>
 <td align="center"><h3>3</h3></td>
-<td><b>Backup</b> — Write down 32 words in whatever language and form you prefer</td>
+<td><b>Backup</b> — Write down 36 words in whatever language and form you prefer</td>
 </tr>
 <tr>
 <td align="center"><h3>4</h3></td>
@@ -89,7 +90,7 @@ The Universal Seed System takes a fundamentally different approach:
 </tr>
 <tr>
 <td align="center"><h3>5</h3></td>
-<td><b>Recover</b> — Type your words in any supported language, or select the 32 icons visually</td>
+<td><b>Recover</b> — Type your words in any supported language, or select the 36 icons visually</td>
 </tr>
 </table>
 
@@ -101,16 +102,16 @@ The system supports two entropy configurations:
 
 <div align="center">
 
-| Configuration | Words | Entropy | Combinations | Use Case |
-|:---|:---:|:---:|:---:|:---|
-| **Standard** | 32 | 256-bit | ~1.16 × 10⁷⁷ | Maximum security — strongest available for cryptocurrency |
-| **Compact** | 16 | 128-bit | ~3.40 × 10³⁸ | High security — sufficient for most applications |
+| Configuration | Words | Random + Checksum | Entropy | Combinations | Use Case |
+|:---|:---:|:---:|:---:|:---:|:---|
+| **Standard** | 36 | 34 + 2 | 272-bit | ~7.59 × 10⁸¹ | Maximum security — strongest available for cryptocurrency |
+| **Compact** | 24 | 22 + 2 | 176-bit | ~9.59 × 10⁵² | High security — sufficient for most applications |
 
 </div>
 
 <br>
 
-**256-bit** is the strongest entropy level used in cryptocurrency. Brute-forcing a 256-bit seed would require more energy than the sun produces in its lifetime. Both configurations use the same 256-position icon set with full positional encoding.
+**272-bit** exceeds the strongest entropy level used in cryptocurrency. Brute-forcing a 272-bit seed would require more energy than the sun produces in its lifetime. Both configurations use the same 256-position icon set with full positional encoding, and include a 16-bit checksum (2 dedicated words) for error detection.
 
 ### Strength Comparison
 
@@ -119,11 +120,12 @@ The system supports two entropy configurations:
 | RSA 2048 | ~112-bit | Standard key exchange |
 | AES-128 | 128-bit | High security baseline |
 | Bitcoin (BIP-39, 12 words) | 128-bit | Industry standard for most wallets |
+| **Universal Seed (24 words)** | **176-bit** | **Stronger than any symmetric cipher in common use** |
 | AES-256 | 256-bit | Military grade |
-| **Universal Seed (32 words)** | **256-bit** | **Military grade** |
-| **Universal Seed + passphrase** | **256+ bits** | **Beyond military grade — second factor expands the keyspace further** |
+| **Universal Seed (36 words)** | **272-bit** | **Beyond military grade** |
+| **Universal Seed + passphrase** | **272+ bits** | **Second factor expands the keyspace further** |
 
-A 32-word Universal Seed is **2¹⁴⁴ times stronger** than RSA 2048. Adding a passphrase pushes it even further beyond 256 bits.
+A 36-word Universal Seed is **2¹⁶⁰ times stronger** than RSA 2048. Adding a passphrase pushes it even further beyond 272 bits.
 
 <br>
 
@@ -174,15 +176,20 @@ A single CSPRNG (like `secrets`) is already sufficient for most applications. We
 
 <br>
 
-## Key Derivation Pipeline — 5 Hardening Layers
+## Key Derivation Pipeline — 6 Hardening Layers
 
-After generation, the seed is transformed into a 512-bit master key through a **5-layer hardening pipeline**. Each layer addresses a specific attack vector:
+After generation, the seed is transformed into a 512-bit master key through a **6-layer hardening pipeline**. Each layer addresses a specific attack vector:
 
 ```
-  Seed (32 × 8-bit icons) + optional Passphrase
+  Seed (34 × 8-bit icons + 2 checksum) + optional Passphrase
          │
     ┌────▼─────────────────────┐
-    │ 1. Positional Binding    │  Each icon tagged with its slot index
+    │ 0. Checksum Verification │  Verifies the 2 checksum words
+    │    & Stripping           │  Then strips them — only data words enter KDF
+    └────┬─────────────────────┘
+         │
+    ┌────▼─────────────────────┐
+    │ 1. Positional Binding    │  Each data icon tagged with its slot index
     │    (pos, icon) pairs     │  Prevents reordering attacks
     └────┬─────────────────────┘
          │
@@ -234,10 +241,10 @@ payload = [(pos=0, icon=15), (pos=1, icon=63), ...] + passphrase_bytes
 
 ### Layer 3 — HKDF-Extract (RFC 5869)
 
-The combined payload (seed + passphrase) is collapsed into a fixed-size **pseudorandom key (PRK)** using HMAC-SHA512 with a domain separator (`universal-seed-v1`):
+The combined payload (seed + passphrase) is collapsed into a fixed-size **pseudorandom key (PRK)** using HMAC-SHA512 with a domain separator (`universal-seed-v2`):
 
 ```
-PRK = HMAC-SHA512(key="universal-seed-v1", msg=payload)
+PRK = HMAC-SHA512(key="universal-seed-v2", msg=payload)
 ```
 
 **Why:** HKDF-Extract is a proven randomness extractor. It takes the variable-length payload (which may have structure — repeating icons, short seeds, passphrase) and produces a uniformly distributed 512-bit key. The domain separator ensures that keys derived by this system can **never collide** with keys from any other system, even if the input data is identical.
@@ -256,8 +263,8 @@ The PRK is stretched through **two KDFs in series** — PBKDF2-SHA512 first, the
 | **ASIC resistance** | Low | **High** (memory-hard) |
 
 ```
-stage1    = PBKDF2-SHA512(PRK, salt="universal-seed-v1-stretch-pbkdf2", rounds=600000)
-stretched = Argon2id(secret=stage1, salt="universal-seed-v1-stretch-argon2id")
+stage1    = PBKDF2-SHA512(PRK, salt="universal-seed-v2-stretch-pbkdf2", rounds=600000)
+stretched = Argon2id(secret=stage1, salt="universal-seed-v2-stretch-argon2id")
 ```
 
 **Why:** Defense in depth. PBKDF2-SHA512 provides a proven, NIST-approved baseline that resists brute force through sheer iteration count. Argon2id adds memory-hardness on top, making GPU/ASIC parallelization impractical — each attempt requires 64 MiB of RAM. If a vulnerability were ever found in one algorithm, the other still protects the key.
@@ -273,7 +280,7 @@ pip install argon2-cffi   # required
 The stretched key is expanded into the final 64-byte master key using HKDF-Expand with a domain-specific info string:
 
 ```
-master_key = HKDF-Expand(PRK=stretched, info="universal-seed-v1-master", length=64)
+master_key = HKDF-Expand(PRK=stretched, info="universal-seed-v2-master", length=64)
 ```
 
 **Why:** HKDF-Expand provides **domain separation** for the final output. If this system ever needs to derive multiple keys (e.g., encryption key + authentication key), each can use a different info string. The first 32 bytes serve as a 256-bit encryption key, and the last 32 bytes serve as a 256-bit authentication key.
@@ -295,7 +302,7 @@ Key properties:
 - The passphrase **only affects the derived key and fingerprint**, not the displayed words/icons
 - An empty passphrase is valid and produces a deterministic key
 - The passphrase goes through the full PBKDF2 + Argon2id pipeline — brute-forcing is expensive
-- Entropy from the passphrase **adds to** the seed entropy (256 + passphrase bits)
+- Entropy from the passphrase **adds to** the seed entropy (272 + passphrase bits)
 
 ### Entropy Estimation
 
@@ -304,11 +311,11 @@ The `get_entropy_bits()` function estimates total security strength:
 ```python
 from seed import get_entropy_bits
 
-get_entropy_bits(32)                    # → 256.0 (seed only)
-get_entropy_bits(32, "hunter2")         # → 289.3 (+ passphrase)
-get_entropy_bits(32, "Tr0ub4dor&3")    # → 321.2 (mixed case + digits + symbols)
-get_entropy_bits(16)                    # → 128.0 (compact seed)
-get_entropy_bits(16, "パスワード")       # → 177.2 (+ Unicode passphrase)
+get_entropy_bits(36)                    # → 272.0 (seed only)
+get_entropy_bits(36, "hunter2")         # → 305.3 (+ passphrase)
+get_entropy_bits(36, "Tr0ub4dor&3")    # → 337.2 (mixed case + digits + symbols)
+get_entropy_bits(24)                    # → 176.0 (compact seed)
+get_entropy_bits(24, "パスワード")       # → 225.2 (+ Unicode passphrase)
 ```
 
 Passphrase entropy is estimated from the character set used:
@@ -339,14 +346,14 @@ No other dependencies required. `seed.py` uses only Python standard library plus
 ### Quick Start
 
 ```python
-from seed import generate_words, get_private_key, get_fingerprint, get_entropy_bits, get_languages
+from seed import generate_words, get_private_key, get_fingerprint, get_entropy_bits, get_languages, verify_checksum
 
-# Generate a 32-word seed (256-bit entropy)
-seed = generate_words(32)
-# → [(15, "dog"), (63, "sun"), (136, "key"), ...]
+# Generate a 36-word seed (272-bit entropy, 34 random + 2 checksum)
+seed = generate_words(36)
+# → [(15, "dog"), (63, "sun"), (136, "key"), ..., (cs1, "word"), (cs2, "word")]
 
 # Generate in a specific language
-seed = generate_words(32, language="french")
+seed = generate_words(36, language="french")
 # → [(15, "chien"), (63, "soleil"), (136, "clé"), ...]
 
 # List available languages
@@ -355,18 +362,22 @@ get_languages()
 
 # Derive a key — pass the seed directly
 key = get_private_key(seed)                # 64 bytes
-fp  = get_fingerprint(seed)                # "A3F1"
+fp  = get_fingerprint(seed)                # "A3F1B2C4"
+
+# Verify checksum (last 2 words)
+verify_checksum(seed)                      # True
 
 # With a passphrase (second factor — same seed, different passphrase = different key)
 key = get_private_key(seed, "my secret passphrase")
 
-# Also accepts plain words or indexes
-key = get_private_key(["dog", "sun", "key", ...])
-key = get_private_key([15, 63, 136, ...])
+# Also accepts plain words or raw indexes (must be 24 or 36 with valid checksum)
+words = [w for _, w in seed]          # extract word strings
+key = get_private_key(words)          # resolve words → indexes → key
+key = get_private_key([i for i, _ in seed])  # raw indexes work too
 
 # Estimate total entropy
-bits = get_entropy_bits(32, "my secret passphrase")
-# → 367.8 (256 seed + 111.8 passphrase)
+bits = get_entropy_bits(36, "my secret passphrase")
+# → 383.8 (272 seed + 111.8 passphrase)
 ```
 
 ### Word Resolution
@@ -412,7 +423,7 @@ pool.sample_count     # → 2
 
 # Extract and use
 extra = pool.digest()                        # 64 bytes of entropy
-seed = generate_words(32, extra_entropy=extra)  # mixed into generation
+seed = generate_words(36, extra_entropy=extra)  # mixed into generation
 ```
 
 ### Randomness Verification
@@ -458,11 +469,12 @@ print(kdf_info())
 
 | Function | Signature | Returns |
 |:---|:---|:---|
-| `generate_words` | `generate_words(word_count=32, extra_entropy=None, language=None)` | `list[(int, str)]` — index/word pairs |
-| `get_private_key` | `get_private_key(seed, passphrase="")` | `bytes` — 64-byte master key |
-| `get_fingerprint` | `get_fingerprint(seed, passphrase="")` | `str` — 4-char hex ("A3F1") |
+| `generate_words` | `generate_words(word_count=36, extra_entropy=None, language=None)` | `list[(int, str)]` — index/word pairs (last 2 are checksum) |
+| `verify_checksum` | `verify_checksum(seed)` | `bool` — True if last 2 words match expected checksum |
+| `get_private_key` | `get_private_key(seed, passphrase="")` | `bytes` — 64-byte master key (checksum verified & stripped) |
+| `get_fingerprint` | `get_fingerprint(seed, passphrase="")` | `str` — 8-char hex (checksum stripped) |
 | `get_entropy_bits` | `get_entropy_bits(word_count, passphrase="")` | `float` — estimated total entropy |
-| `resolve` | `resolve(word_or_list)` | `str` → `int \| None`; `list` → `(indexes, errors)` |
+| `resolve` | `resolve(word_or_list, strict=False)` | `str` → `int \| None`; `list` → `(indexes, errors)` |
 | `search` | `search(prefix, limit=10)` | `list[(str, int)]` — word/index pairs |
 | `verify_randomness` | `verify_randomness(sample_bytes=None, sample_size=2048, num_samples=5)` | `dict` — `{"pass": bool, "tests": [...], "summary": str}` |
 | `mouse_entropy` | class | Entropy collection pool |
@@ -954,12 +966,12 @@ Smart per-script handling — marks are only stripped where it's safe:
 | Operation | Time | Notes |
 |:---|:---|:---|
 | **Import / JSON load** | ~99 ms | One-time at startup (38,730 keys) |
-| **Generate 32 words** | ~9 ms | Full 8-source entropy collection |
-| **Generate 16 words** | ~5 ms | Full 8-source entropy collection |
+| **Generate 36 words** | ~9 ms | Full 8-source entropy collection + checksum |
+| **Generate 24 words** | ~5 ms | Full 8-source entropy collection + checksum |
 | **Key derivation** | ~2 sec | PBKDF2 (600k rounds) + Argon2id (64 MiB) |
 | **Word resolve** | ~0.01 ms | O(1) hash table lookup |
 | **Prefix search** | ~0.04 ms | Binary search + dedup |
-| **32-word seed resolve** | ~0.3 ms | 32 × resolve |
+| **36-word seed resolve** | ~0.3 ms | 36 × resolve |
 | **Fingerprint (no passphrase)** | <0.01 ms | HMAC only |
 | **Fingerprint (with passphrase)** | ~2 sec | Full chained KDF pipeline |
 
@@ -997,7 +1009,7 @@ They write their backup on paper — in any language, using any accepted word, o
 | Mixed | `dog  soleil  key  ...` | Languages can be combined freely |
 | Personal hints | `puppy  bright  lock  ...` | Any accepted synonym — write what makes sense to you |
 
-To recover, they type what they wrote — in any language — and the system maps each word back to its visual position. Alternatively, they can select the **32 icons directly**, bypassing language entirely.
+To recover, they type what they wrote — in any language — and the system maps each word back to its visual position. Alternatively, they can select the **36 icons directly**, bypassing language entirely.
 
 <br>
 
@@ -1039,6 +1051,6 @@ MIT License. See [LICENSE](LICENSE).
 
 **Built for everyone, everywhere.**
 
-<sub>42 languages · 256 icons · 8 entropy sources · PBKDF2 + Argon2id hardened · 256-bit security</sub>
+<sub>42 languages · 256 icons · 8 entropy sources · PBKDF2 + Argon2id hardened · 272-bit security · 16-bit checksum</sub>
 
 </div>

@@ -1,14 +1,15 @@
 # Copyright (c) 2026 Signer — MIT License
 
-__version__ = "1.3"
+__version__ = "2.0"
 
 """Seed generation for the Universal Seed System.
 
 Generates cryptographically secure seeds using 256 visual icons (8 bits each).
-- 16 words = 128 bits of entropy
-- 32 words = 256 bits of entropy
+- 24 words = 22 random + 2 checksum = 176 bits of entropy
+- 36 words = 34 random + 2 checksum = 272 bits of entropy
 
-Every word is pure entropy — no words are wasted on checksums.
+The last 2 words of every seed are a 16-bit checksum (HMAC-SHA-256 based)
+that detects transcription errors with 1-in-65,536 false-positive rate.
 
 Entropy is gathered from multiple independent sources and mixed through
 SHA-512 (a cryptographic randomness extractor). This ensures that even if
@@ -35,10 +36,10 @@ Sources (8 independent classes):
 
 Usage:
     from seed import generate_words, get_private_key, get_fingerprint, resolve, search
-    seed = generate_words(32)                       # [(idx, "word"), ...]
+    seed = generate_words(36)                       # [(idx, "word"), ...] — 34 random + 2 checksum
     key  = get_private_key(seed)                    # 64 bytes — pass seed directly
     key  = get_private_key(seed, "passphrase")      # with passphrase (second factor)
-    fp   = get_fingerprint(seed)                    # "A3F1" visual checksum
+    fp   = get_fingerprint(seed)                    # "A3F1B2C4" visual fingerprint
     idx   = resolve("dog")                          # 15
     idxs, errs = resolve(["dog", "sun", "key"])     # ([15, 63, 136], [])
     matches = search("do")                          # [("dog", 15), ...]
@@ -125,7 +126,7 @@ def get_languages():
 
 # Domain separator — ensures keys from this system can never collide
 # with keys derived by other systems using the same hash functions.
-_DOMAIN = b"universal-seed-v1"
+_DOMAIN = b"universal-seed-v2"
 
 # Argon2id parameters (OWASP recommended for high-value targets)
 _ARGON2_TIME = 3         # iterations
@@ -249,8 +250,12 @@ def _normalize_emoji(text):
     return e
 
 
-def _resolve_one(word):
-    """Resolve a single word/emoji to its visual index (0-255), or None."""
+def _resolve_one(word, strict=False):
+    """Resolve a single word/emoji to its visual index (0-255), or None.
+
+    strict=False (default): tries fallbacks (diacritics, articles, suffixes)
+    strict=True: exact normalized lookup only — no fuzzy fallbacks
+    """
     t0 = time.perf_counter()
     key = _normalize(word)
 
@@ -273,6 +278,10 @@ def _resolve_one(word):
         if result is not None:
             if DEBUG: print(f"  [resolve] emoji match '{e_key}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
             return result
+
+    if strict:
+        if DEBUG: print(f"  [resolve] no match for '{key}' (strict)  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+        return None
 
     # Fallback: try diacritic-stripped version
     stripped = _strip_diacritics(key)
@@ -324,10 +333,13 @@ def _resolve_one(word):
     return None
 
 
-def resolve(words):
+def resolve(words, strict=False):
     """Resolve one or more words (any language) or emoji to visual indexes.
 
     Accepts a single word (string) or a list of words.
+
+    strict=False (default): tries fuzzy fallbacks (diacritics, articles, suffixes)
+    strict=True: exact normalized lookup only — no fuzzy fallbacks
 
     Single word:
         resolve("dog")      → 15
@@ -342,12 +354,12 @@ def resolve(words):
         list input: (indexes, errors) where errors is [(position, word), ...]
     """
     if isinstance(words, str):
-        return _resolve_one(words)
+        return _resolve_one(words, strict=strict)
 
     indexes = []
     errors = []
     for i, word in enumerate(words):
-        idx = _resolve_one(word)
+        idx = _resolve_one(word, strict=strict)
         if idx is not None:
             indexes.append(idx)
         else:
@@ -478,7 +490,7 @@ class mouse_entropy:
         pool.add_sample(x, y)   # call on each mouse move
         pool.bits_collected      # check progress
         extra = pool.digest()    # extract entropy bytes
-        seed = generate_words(32, extra_entropy=extra)
+        seed = generate_words(36, extra_entropy=extra)
     """
 
     def __init__(self):
@@ -713,10 +725,12 @@ _MAX_ENTROPY_RETRIES = 10
 _VALIDATION_SAMPLE_SIZE = 1024  # bytes — large enough for statistical tests
 
 
-def generate_words(word_count=32, extra_entropy=None, language=None):
-    """Generate a cryptographically secure seed.
+def generate_words(word_count=36, extra_entropy=None, language=None):
+    """Generate a cryptographically secure seed with 16-bit checksum.
 
-    All words are pure entropy — nothing is wasted on checksums.
+    The last 2 words are a checksum derived from the random words via
+    HMAC-SHA-256 with domain separation. This provides 16-bit error detection
+    (1-in-65,536 false positive rate).
 
     The entropy pipeline is validated before use: a 1024-byte sample is
     drawn from the same sources and tested with four statistical tests
@@ -725,21 +739,24 @@ def generate_words(word_count=32, extra_entropy=None, language=None):
     attempts. Only after validation passes is the actual seed generated.
 
     Args:
-        word_count: 16 (128-bit) or 32 (256-bit)
+        word_count: 24 (176-bit, 22 random + 2 checksum) or
+                    36 (272-bit, 34 random + 2 checksum).
         extra_entropy: Optional bytes to mix in (e.g. from mouse_entropy.digest()).
         language: Optional language code (e.g. "french", "arabic").
                   None or "english" returns English words.
 
     Returns:
-        List of (index, word) tuples.
+        List of (index, word) tuples. Last 2 are checksum words.
 
     Raises:
-        ValueError: If word_count is not 16 or 32, or language is unknown.
+        ValueError: If word_count is not 24 or 36, or language is unknown.
         RuntimeError: If all 10 entropy attempts fail validation
                       (indicates a compromised or broken RNG).
     """
-    if word_count not in (16, 32):
-        raise ValueError("word_count must be 16 or 32")
+    if word_count not in (24, 36):
+        raise ValueError("word_count must be 24 or 36")
+
+    data_count = word_count - 2  # random words (22 or 34)
 
     # Resolve word map for requested language
     if language and language != "english":
@@ -750,19 +767,43 @@ def generate_words(word_count=32, extra_entropy=None, language=None):
     for _ in range(_MAX_ENTROPY_RETRIES):
         # Validate the entropy pipeline with a large sample (1024 bytes)
         # so the statistical tests have enough data to detect real bias.
-        # 32 bytes is too few — chi-squared needs hundreds of observations.
         test_sample = _collect_entropy(_VALIDATION_SAMPLE_SIZE, extra_entropy)
         tests = _test_entropy(test_sample)
         if all(t["pass"] for t in tests.values()):
-            # Pipeline is healthy — now generate the actual seed
-            entropy = _collect_entropy(word_count, extra_entropy)
+            # Pipeline is healthy — now generate the random words
+            entropy = _collect_entropy(data_count, extra_entropy)
             indexes = list(entropy)
+            # Append 2 checksum words
+            indexes.extend(_compute_checksum(indexes))
             return [(idx, word_map[idx]) for idx in indexes]
 
     raise RuntimeError(
         f"Entropy failed validation {_MAX_ENTROPY_RETRIES} times — "
         "RNG source may be compromised. Do NOT generate seeds on this system."
     )
+
+
+def _compute_checksum(indexes):
+    """Compute 2 checksum indexes from a list of random seed indexes."""
+    digest = hmac.new(_DOMAIN + b"-checksum", bytes(indexes), hashlib.sha256).digest()
+    return [digest[0], digest[1]]
+
+
+def verify_checksum(seed):
+    """Verify the last 2 words are valid checksum words.
+
+    Args:
+        seed: List of (index, word) tuples, plain indexes, or words.
+
+    Returns:
+        True if the checksum is valid, False otherwise.
+    """
+    indexes = _to_indexes(seed)
+    if len(indexes) not in (24, 36):
+        return False
+    data = indexes[:-2]
+    expected = _compute_checksum(data)
+    return indexes[-2:] == expected
 
 
 def _hkdf_expand(prk, info, length):
@@ -810,10 +851,13 @@ def _stretch(prk):
 def _to_indexes(seed):
     """Convert a seed to a list of integer indexes.
 
+    Uses strict resolution (no fuzzy fallbacks) to prevent
+    accidental misresolution during key derivation.
+
     Accepts:
         - List of (int, str) tuples: output of generate_words() — indexes extracted
         - List of ints (0-255): returned as-is
-        - List of strings: each word is resolved via resolve()
+        - List of strings: each word is resolved via resolve(strict=True)
 
     Raises ValueError if any word fails to resolve.
     """
@@ -824,8 +868,8 @@ def _to_indexes(seed):
         return [idx for idx, _ in seed]
     if isinstance(first, int):
         return seed
-    # Resolve words → indexes
-    indexes, errors = resolve(list(seed))
+    # Resolve words → indexes (strict: no fuzzy fallbacks)
+    indexes, errors = resolve(list(seed), strict=True)
     if errors:
         bad = ", ".join(f"'{w}' (pos {i})" for i, w in errors)
         raise ValueError(f"could not resolve: {bad}")
@@ -835,12 +879,17 @@ def _to_indexes(seed):
 def get_private_key(seed, passphrase=""):
     """Derive 512 bits of hardened key material from a seed + optional passphrase.
 
+    Only the data words (first 22 or 34) enter the KDF — the 2 checksum
+    words are verified and then stripped so the derived key depends solely
+    on the random entropy.
+
     Security layers:
-        1. Positional binding — each icon is tagged with its slot index
-        2. Passphrase mixing — optional second factor mixed into input
-        3. HKDF-Extract — collapses payload into a pseudorandom key (RFC 5869)
-        4. Chained KDF — PBKDF2-SHA512 (600k rounds) then Argon2id (64 MiB)
-        5. HKDF-Expand — derives final 64-byte key with domain separation
+        1. Checksum verification — rejects corrupted seeds before derivation
+        2. Positional binding — each data icon is tagged with its slot index
+        3. Passphrase mixing — optional second factor mixed into input
+        4. HKDF-Extract — collapses payload into a pseudorandom key (RFC 5869)
+        5. Chained KDF — PBKDF2-SHA512 (600k rounds) then Argon2id (64 MiB)
+        6. HKDF-Expand — derives final 64-byte key with domain separation
 
     The output is 64 bytes (512 bits) which can be split into:
         - First 32 bytes: 256-bit encryption key
@@ -857,10 +906,21 @@ def get_private_key(seed, passphrase=""):
 
     Returns:
         64 bytes of derived key material.
+
+    Raises:
+        ValueError: If the seed length is invalid or checksum fails.
     """
     indexes = _to_indexes(seed)
 
-    # Step 1: Position-tagged payload — each icon is bound to its slot
+    # Step 0: Enforce valid length and verify checksum
+    if len(indexes) not in (24, 36):
+        raise ValueError(f"seed must be 24 or 36 words, got {len(indexes)}")
+    data = indexes[:-2]
+    if indexes[-2:] != _compute_checksum(data):
+        raise ValueError("invalid seed checksum")
+    indexes = data
+
+    # Step 1: Position-tagged payload — each data icon is bound to its slot
     payload = b""
     for pos, idx in enumerate(indexes):
         payload += struct.pack("<BB", pos, idx)
@@ -882,6 +942,9 @@ def get_private_key(seed, passphrase=""):
 def get_fingerprint(seed, passphrase=""):
     """Compute a short visual fingerprint for verification.
 
+    Checksum words are stripped before computing — the fingerprint
+    depends only on the data words (and optional passphrase).
+
     Without a passphrase this is instant (HMAC only).
     With a passphrase it runs the full PBKDF2 + Argon2id pipeline
     so the fingerprint reflects both the seed AND the passphrase.
@@ -891,22 +954,27 @@ def get_fingerprint(seed, passphrase=""):
         passphrase: Optional passphrase (if set, fingerprint changes).
 
     Returns:
-        4-char uppercase hex string, e.g. "A3F1".
+        8-char uppercase hex string, e.g. "A3F1B2C4".
     """
     indexes = _to_indexes(seed)
+    # Enforce valid length and strip checksum words
+    if len(indexes) not in (24, 36):
+        raise ValueError(f"seed must be 24 or 36 words, got {len(indexes)}")
+    data = indexes[:-2]
     if passphrase:
-        key = get_private_key(indexes, passphrase)
+        key = get_private_key(indexes, passphrase)  # full seed — it strips internally
     else:
         payload = b""
-        for pos, idx in enumerate(indexes):
+        for pos, idx in enumerate(data):
             payload += struct.pack("<BB", pos, idx)
         key = hmac.new(_DOMAIN, payload, hashlib.sha512).digest()
-    return key[:2].hex().upper()
+    return key[:4].hex().upper()
 
 def get_entropy_bits(word_count, passphrase=""):
     """Calculate total entropy in bits from seed words + passphrase.
 
-    Seed entropy: word_count × 8 bits (each word = 1 of 256 icons).
+    Seed entropy: (word_count - 2) × 8 bits. The last 2 words are checksum
+    and don't contribute additional entropy.
 
     Passphrase entropy is estimated from its character set:
         - Digits only (0-9):            ~3.32 bits/char
@@ -920,13 +988,13 @@ def get_entropy_bits(word_count, passphrase=""):
     the character classes used but not the actual characters.
 
     Args:
-        word_count: Number of seed words (16 or 32).
+        word_count: Number of seed words (24 or 36, includes 2 checksum).
         passphrase: Passphrase string.
 
     Returns:
-        Estimated total entropy as a float (e.g. 256.0, 289.3).
+        Estimated total entropy as a float (e.g. 272.0, 305.3).
     """
-    seed_bits = word_count * 8
+    seed_bits = (word_count - 2) * 8  # checksum words don't add entropy
 
     if not passphrase:
         return float(seed_bits)

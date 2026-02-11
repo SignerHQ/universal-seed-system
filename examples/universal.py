@@ -690,7 +690,7 @@ class SeedTestWindow(QMainWindow):
         self.setMinimumSize(620, 600)
         self.resize(640, 820)
         self.setStyleSheet(STYLE)
-        self.word_count = 32
+        self.word_count = 36
         self._base_indexes = None  # Original indexes before passphrase transform
         self._key_version = 0  # Tracks async key derivation freshness
         self._key_deriving = False  # True while a thread is running
@@ -804,19 +804,19 @@ class SeedTestWindow(QMainWindow):
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(6)
 
-        self.btn_16 = QPushButton("16 words")
-        self.btn_16.setFixedHeight(28)
-        self.btn_16.setCursor(Qt.PointingHandCursor)
-        self.btn_16.setStyleSheet(TOGGLE_INACTIVE)
-        self.btn_16.clicked.connect(lambda: self._set_word_count(16))
-        controls.addWidget(self.btn_16)
+        self.btn_24 = QPushButton("24 words")
+        self.btn_24.setFixedHeight(28)
+        self.btn_24.setCursor(Qt.PointingHandCursor)
+        self.btn_24.setStyleSheet(TOGGLE_INACTIVE)
+        self.btn_24.clicked.connect(lambda: self._set_word_count(24))
+        controls.addWidget(self.btn_24)
 
-        self.btn_32 = QPushButton("32 words")
-        self.btn_32.setFixedHeight(28)
-        self.btn_32.setCursor(Qt.PointingHandCursor)
-        self.btn_32.setStyleSheet(TOGGLE_ACTIVE)
-        self.btn_32.clicked.connect(lambda: self._set_word_count(32))
-        controls.addWidget(self.btn_32)
+        self.btn_36 = QPushButton("36 words")
+        self.btn_36.setFixedHeight(28)
+        self.btn_36.setCursor(Qt.PointingHandCursor)
+        self.btn_36.setStyleSheet(TOGGLE_ACTIVE)
+        self.btn_36.clicked.connect(lambda: self._set_word_count(36))
+        controls.addWidget(self.btn_36)
 
         controls.addSpacing(8)
 
@@ -882,7 +882,7 @@ class SeedTestWindow(QMainWindow):
         rows_layout.setSpacing(4)
 
         self.rows = []
-        for i in range(32):
+        for i in range(36):
             row = SeedWordRow(i)
             row.status_changed.connect(self._update_status)
             rows_layout.addWidget(row)
@@ -956,7 +956,7 @@ class SeedTestWindow(QMainWindow):
         sl = QHBoxLayout(self.status_frame)
         sl.setContentsMargins(16, 0, 16, 0)
 
-        self.count_label = QLabel("0 / 32")
+        self.count_label = QLabel("0 / 36")
         self.count_label.setStyleSheet(
             "color: #9898a8; font-size: 14px; font-weight: 600; border: none; background: none;"
         )
@@ -1258,8 +1258,8 @@ class SeedTestWindow(QMainWindow):
             return
         self.word_count = count
         # Update toggle styles
-        self.btn_16.setStyleSheet(TOGGLE_ACTIVE if count == 16 else TOGGLE_INACTIVE)
-        self.btn_32.setStyleSheet(TOGGLE_ACTIVE if count == 32 else TOGGLE_INACTIVE)
+        self.btn_24.setStyleSheet(TOGGLE_ACTIVE if count == 24 else TOGGLE_INACTIVE)
+        self.btn_36.setStyleSheet(TOGGLE_ACTIVE if count == 36 else TOGGLE_INACTIVE)
         # Show/hide rows — keep data intact so switching back restores words
         for i, row in enumerate(self.rows):
             if i < count:
