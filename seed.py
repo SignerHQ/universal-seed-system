@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Signer — MIT License
 
-__version__ = "2.0"
+__version__ = "2.1"
 
 """Seed generation for the Universal Seed System.
 
@@ -468,6 +468,19 @@ def search(prefix, limit=10):
             seen_indexes.add(idx)
             results.append((full_key, idx))
             remaining -= 1
+
+    # Substring matching — find entries containing the search term anywhere
+    if remaining > 0 and len(key) >= 2:
+        for full_key in _SORTED_KEYS:
+            if remaining <= 0:
+                break
+            if key in full_key:
+                idx = _LOOKUP[full_key]
+                if idx in seen_indexes:
+                    continue
+                seen_indexes.add(idx)
+                results.append((full_key, idx))
+                remaining -= 1
 
     elapsed = (time.perf_counter() - t0) * 1000
     if DEBUG: print(f"  [search] prefix='{key}' ->{len(results)} unique results  ({elapsed:.2f}ms)")
