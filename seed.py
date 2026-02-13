@@ -139,9 +139,9 @@ _PBKDF2_ITERATIONS = 600_000
 
 # ── Word lookup data ──────────────────────────────────────────────
 try:
-    from .words import LOOKUP as _LOOKUP, LANGUAGES as _LANGUAGES
+    from .words import LOOKUP as _LOOKUP, LANGUAGES as _LANGUAGES, DARK_VISUALS
 except ImportError:
-    from words import LOOKUP as _LOOKUP, LANGUAGES as _LANGUAGES
+    from words import LOOKUP as _LOOKUP, LANGUAGES as _LANGUAGES, DARK_VISUALS
 
 _SORTED_KEYS = sorted(_LOOKUP.keys())
 _INDEX_TO_BASE = _BASE  # index -> base English word
