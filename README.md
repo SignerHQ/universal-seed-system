@@ -28,11 +28,13 @@
 
 <br>
 
-*Screenshots from signer's treasury app*
+*Screenshots from Signer's treasury app*
 
 <table>
 <tr>
-<td><img src="examples/screenshots/universal.gif" width="800"></td>
+<td><img src="examples/screenshots/treasury1.png" width="270"></td>
+<td><img src="examples/screenshots/treasury2.png" width="270"></td>
+<td><img src="examples/screenshots/treasury3.png" width="270"></td>
 </tr>
 </table>
 
