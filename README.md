@@ -67,6 +67,9 @@ sk, pk = generate_quantum_keypair(seed, "ml-dsa-65")
 
 # SLH-DSA-SHAKE-128s — conservative hash-based signatures (NIST Level 1)
 sk, pk = generate_quantum_keypair(seed, "slh-dsa-shake-128s")
+
+# ML-DSA-65 DEFAULT
+sk, pk = generate_quantum_keypair(seed)
 ```
 
 Classical ECC keys (secp256k1, Ed25519) will be broken by Shor's algorithm on quantum computers. These quantum keypairs ensure your seed remains secure and usable in a post-quantum world.
