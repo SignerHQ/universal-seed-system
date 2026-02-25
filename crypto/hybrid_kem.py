@@ -124,8 +124,30 @@ def hybrid_kem_encaps(ek, randomness=None):
     return ct, ss
 
 
+def _x25519_shared_or_fallback(x_sk, eph_pk, ct):
+    """Compute X25519 shared secret with implicit rejection on failure.
+
+    If the X25519 computation fails (low-order/invalid ephemeral public key),
+    derives a pseudorandom fallback keyed by the private key and ciphertext.
+    This avoids exposing a validity oracle (exception vs. success) and preserves
+    the hybrid's robustness: an attacker cannot force the classical component
+    to a known value to reduce security to ML-KEM alone.
+    """
+    try:
+        return x25519(x_sk, eph_pk)
+    except ValueError:
+        return hmac.new(
+            x_sk, b"hybrid-kem-x25519-fail" + ct, hashlib.sha256
+        ).digest()
+
+
 def hybrid_kem_decaps(dk, ct):
     """Decapsulate: recover combined shared secret from hybrid ciphertext.
+
+    Uses implicit rejection for both components:
+    - ML-KEM: returns K_bar on ciphertext mismatch (FIPS 203 built-in).
+    - X25519: derives a secret fallback on low-order/invalid ephemeral keys,
+      preventing a validity oracle and keeping the hybrid robust.
 
     Args:
         dk: 2,432-byte hybrid decapsulation key.
@@ -148,10 +170,10 @@ def hybrid_kem_decaps(dk, ct):
     eph_pk = ct[:_X25519_PK]
     ml_ct = ct[_X25519_PK:]
 
-    # X25519 shared secret recovery
-    x_ss = x25519(x_sk, eph_pk)
+    # X25519 shared secret recovery (implicit rejection on failure)
+    x_ss = _x25519_shared_or_fallback(x_sk, eph_pk, ct)
 
-    # ML-KEM decapsulation
+    # ML-KEM decapsulation (implicit rejection built-in)
     ml_ss = ml_kem_decaps(ml_dk, ml_ct)
 
     # Combine shared secrets with ciphertext binding

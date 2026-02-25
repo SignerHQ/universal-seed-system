@@ -250,8 +250,8 @@ def _sample_cbd(data, eta):
         # popcount of lower eta bits minus popcount of upper eta bits
         a_half = chunk & ((1 << eta) - 1)
         b_half = chunk >> eta
-        a_sum = bin(a_half).count("1")
-        b_sum = bin(b_half).count("1")
+        a_sum = a_half.bit_count()
+        b_sum = b_half.bit_count()
         f.append((a_sum - b_sum) % _Q)
     return f
 
@@ -320,14 +320,11 @@ def _k_pke_keygen(d):
         t_hat.append(_poly_add(acc, e[i]))
 
     # Encode keys
-    ek_pke = b""
-    for i in range(_K):
-        ek_pke += _byte_encode(t_hat[i], 12)
-    ek_pke += rho
+    ek_parts = [_byte_encode(t_hat[i], 12) for i in range(_K)]
+    ek_parts.append(rho)
+    ek_pke = b"".join(ek_parts)
 
-    dk_pke = b""
-    for i in range(_K):
-        dk_pke += _byte_encode(s[i], 12)
+    dk_pke = b"".join(_byte_encode(s[i], 12) for i in range(_K))
 
     return ek_pke, dk_pke
 
@@ -390,9 +387,7 @@ def _k_pke_encrypt(ek_pke, m, r):
     v = _poly_add(v, m_poly)
 
     # Compress and encode ciphertext
-    c1 = b""
-    for i in range(_K):
-        c1 += _byte_encode(_compress_poly(u[i], _DU), _DU)
+    c1 = b"".join(_byte_encode(_compress_poly(u[i], _DU), _DU) for i in range(_K))
     c2 = _byte_encode(_compress_poly(v, _DV), _DV)
 
     return c1 + c2

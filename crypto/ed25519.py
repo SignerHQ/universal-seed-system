@@ -294,15 +294,31 @@ def ed25519_sign(message, sk_bytes):
     return R_bytes + S.to_bytes(32, 'little')
 
 
+def _is_small_order(P):
+    """Check if point has small order (order dividing cofactor 8).
+
+    Computes [8]P via three doublings and checks if the result is the
+    identity. Rejects the 8 small-order points on the Ed25519 curve,
+    which can be exploited to trivially forge signatures for keys that
+    lie entirely in the cofactor subgroup.
+    """
+    P2 = _point_double(P)
+    P4 = _point_double(P2)
+    P8 = _point_double(P4)
+    x8, y8 = _to_affine(P8)
+    return x8 == 0 and y8 == 1
+
+
 def ed25519_verify(message, sig_bytes, pk_bytes):
     """Verify an Ed25519 signature (RFC 8032 Section 5.1.7).
 
     Uses the cofactor-less verification equation [S]B == R + [h]A, which is
     the standard Ed25519 behaviour matching most deployed libraries (libsodium,
-    OpenSSL, Go, etc.).  This does NOT reject small-order or mixed-order public
-    keys; if attacker-supplied public keys are used as identities in a protocol,
-    consider adding an explicit main-subgroup check or adopting a cofactored
-    verification equation (ZIP-215 / ed25519ctx style) as appropriate.
+    OpenSSL, Go, etc.).
+
+    Rejects small-order public keys (those with order dividing the cofactor 8)
+    to prevent trivial forgery attacks where an attacker registers a low-order
+    key and forges signatures for it.
 
     Args:
         message: Arbitrary-length message bytes.
@@ -319,6 +335,10 @@ def ed25519_verify(message, sig_bytes, pk_bytes):
     R = _decode_point(sig_bytes[:32])
     A = _decode_point(pk_bytes)
     if R is None or A is None:
+        return False
+
+    # Reject small-order public keys (cofactor subgroup)
+    if _is_small_order(A):
         return False
 
     S = int.from_bytes(sig_bytes[32:], 'little')

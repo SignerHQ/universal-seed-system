@@ -202,18 +202,18 @@ def _wots_keygen(sk_seed, pk_seed, adrs):
     _adrs_set_type(sk_adrs, _ADRS_TYPE_WOTS_PRF)
     _adrs_set_keypair(sk_adrs, struct.unpack_from(">I", adrs, _ADRS_WORD1)[0])
 
-    tmp = b""
+    chains = []
     for i in range(_LEN):
         _adrs_set_chain(sk_adrs, i)
         sk = _PRF(pk_seed, sk_seed, sk_adrs)
         chain_adrs = _adrs_copy(adrs)
         _adrs_set_chain(chain_adrs, i)
-        tmp += _wots_chain(sk, 0, _W - 1, pk_seed, chain_adrs)
+        chains.append(_wots_chain(sk, 0, _W - 1, pk_seed, chain_adrs))
 
     wots_pk_adrs = _adrs_copy(adrs)
     _adrs_set_type(wots_pk_adrs, _ADRS_TYPE_WOTS_PK)
     _adrs_set_keypair(wots_pk_adrs, struct.unpack_from(">I", adrs, _ADRS_WORD1)[0])
-    return _T_l(pk_seed, wots_pk_adrs, tmp)
+    return _T_l(pk_seed, wots_pk_adrs, b"".join(chains))
 
 
 def _wots_sign(msg, sk_seed, pk_seed, adrs):
@@ -232,14 +232,14 @@ def _wots_sign(msg, sk_seed, pk_seed, adrs):
     _adrs_set_type(sk_adrs, _ADRS_TYPE_WOTS_PRF)
     _adrs_set_keypair(sk_adrs, struct.unpack_from(">I", adrs, _ADRS_WORD1)[0])
 
-    sig = b""
+    chains = []
     for i in range(_LEN):
         _adrs_set_chain(sk_adrs, i)
         sk = _PRF(pk_seed, sk_seed, sk_adrs)
         chain_adrs = _adrs_copy(adrs)
         _adrs_set_chain(chain_adrs, i)
-        sig += _wots_chain(sk, 0, msg_base_w[i], pk_seed, chain_adrs)
-    return sig
+        chains.append(_wots_chain(sk, 0, msg_base_w[i], pk_seed, chain_adrs))
+    return b"".join(chains)
 
 
 def _wots_pk_from_sig(sig, msg, pk_seed, adrs):
@@ -250,17 +250,17 @@ def _wots_pk_from_sig(sig, msg, pk_seed, adrs):
     csum_bytes = csum.to_bytes((_LEN2 * _LG_W + 7) // 8, "big")
     msg_base_w += _base_w(csum_bytes, _LEN2)
 
-    tmp = b""
+    chains = []
     for i in range(_LEN):
         chain_adrs = _adrs_copy(adrs)
         _adrs_set_chain(chain_adrs, i)
         sig_i = sig[i * _N:(i + 1) * _N]
-        tmp += _wots_chain(sig_i, msg_base_w[i], _W - 1 - msg_base_w[i], pk_seed, chain_adrs)
+        chains.append(_wots_chain(sig_i, msg_base_w[i], _W - 1 - msg_base_w[i], pk_seed, chain_adrs))
 
     wots_pk_adrs = _adrs_copy(adrs)
     _adrs_set_type(wots_pk_adrs, _ADRS_TYPE_WOTS_PK)
     _adrs_set_keypair(wots_pk_adrs, struct.unpack_from(">I", adrs, _ADRS_WORD1)[0])
-    return _T_l(pk_seed, wots_pk_adrs, tmp)
+    return _T_l(pk_seed, wots_pk_adrs, b"".join(chains))
 
 
 def _base_w(data, out_len):
@@ -314,12 +314,12 @@ def _xmss_sign(msg, sk_seed, idx, pk_seed, adrs):
     sig = _wots_sign(msg, sk_seed, pk_seed, wots_adrs)
 
     # Authentication path: sibling nodes from leaf to root
-    auth = b""
+    auth_parts = []
     for j in range(_HP):
         sibling = idx ^ 1  # Sibling index at this level
-        auth += _xmss_node(sk_seed, pk_seed, sibling, j, adrs)
+        auth_parts.append(_xmss_node(sk_seed, pk_seed, sibling, j, adrs))
         idx >>= 1
-    return sig, auth
+    return sig, b"".join(auth_parts)
 
 
 # ── Hypertree ──────────────────────────────────────────────────────
@@ -335,7 +335,7 @@ def _ht_sign(msg, sk_seed, pk_seed, idx_tree, idx_leaf):
     _adrs_set_tree(adrs, idx_tree)
 
     sig_tmp, auth_tmp = _xmss_sign(msg, sk_seed, idx_leaf, pk_seed, adrs)
-    sig_ht = sig_tmp + auth_tmp
+    ht_parts = [sig_tmp, auth_tmp]
 
     root = _xmss_root_from_sig(idx_leaf, sig_tmp, auth_tmp, msg, pk_seed, adrs)
 
@@ -346,11 +346,12 @@ def _ht_sign(msg, sk_seed, pk_seed, idx_tree, idx_leaf):
         _adrs_set_layer(adrs, j)
         _adrs_set_tree(adrs, idx_tree)
         sig_tmp, auth_tmp = _xmss_sign(root, sk_seed, idx_leaf, pk_seed, adrs)
-        sig_ht += sig_tmp + auth_tmp
+        ht_parts.append(sig_tmp)
+        ht_parts.append(auth_tmp)
         if j < _D - 1:
             root = _xmss_root_from_sig(idx_leaf, sig_tmp, auth_tmp, root, pk_seed, adrs)
 
-    return sig_ht
+    return b"".join(ht_parts)
 
 
 def _ht_verify(msg, sig_ht, pk_seed, idx_tree, idx_leaf, pk_root):
