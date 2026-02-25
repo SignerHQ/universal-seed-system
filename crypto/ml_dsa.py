@@ -693,7 +693,11 @@ def _ml_sign_internal(message, sk_bytes, rnd=None, deterministic=False):
         rnd = os.urandom(32)
     rho_prime = hashlib.shake_256(K + rnd + mu).digest(64)
 
-    # Step 6: Rejection sampling loop
+    # Step 6: Rejection sampling loop.
+    # FIPS 204 loops "until success"; we bound it at 1000 iterations as a
+    # safety net.  For ML-DSA-65 the expected number of iterations is ~4.25
+    # (see FIPS 204 Table 2), so 1000 is astronomically unlikely to be hit
+    # in practice.  If it ever is, it indicates a bug, not bad luck.
     kappa = 0
     max_attempts = 1000
     for attempt in range(max_attempts):

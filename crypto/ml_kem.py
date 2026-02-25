@@ -57,8 +57,9 @@ def _bitrev7(n):
     return r
 
 
-# Primitive 512th root of unity modulo q = 3329.
-# 17^256 ≡ -1 (mod 3329) and 17^512 ≡ 1 (mod 3329).
+# 17 is a primitive 256th root of unity mod 3329:
+# 17^128 ≡ -1 (mod 3329) and 17^256 ≡ 1 (mod 3329).
+# Note: there is no primitive 512th root of unity in Z_q for q = 3329.
 _ROOT = 17
 
 # Precompute 128 zetas in bit-reversed order (FIPS 203 Section 4.3).
@@ -164,35 +165,44 @@ def _poly_sub(a, b):
 # ── Byte encoding / decoding ────────────────────────────────────
 
 def _byte_encode(f, d):
-    """FIPS 203 Algorithm 5: ByteEncode_d. Encode 256 integers mod 2^d into bytes."""
+    """FIPS 203 Algorithm 5: ByteEncode_d.
+
+    Encode 256 integers into a byte string.  For d < 12 the coefficients
+    are taken mod 2^d; for d = 12 they are elements of Z_q (mod 3329).
+
+    Uses an integer bit-accumulator instead of materialising a bit list.
+    """
     m = (1 << d) if d < 12 else _Q
-    bits = []
+    total_bits = 256 * d
+    acc = 0          # running bit-accumulator
+    bit_pos = 0      # current bit position in acc
     for coeff in f:
-        val = coeff % m
-        for _ in range(d):
-            bits.append(val & 1)
-            val >>= 1
-    # Pack bits into bytes (LSB first)
-    out = bytearray((256 * d + 7) // 8)
-    for i, b in enumerate(bits):
-        out[i // 8] |= b << (i % 8)
+        acc |= (coeff % m) << bit_pos
+        bit_pos += d
+    out = bytearray(acc.to_bytes((total_bits + 7) // 8, "little"))
     return bytes(out)
 
 
 def _byte_decode(data, d):
-    """FIPS 203 Algorithm 6: ByteDecode_d. Decode bytes into 256 integers mod 2^d."""
+    """FIPS 203 Algorithm 6: ByteDecode_d.
+
+    Decode a byte string into 256 integers.  For d < 12 the values are
+    reduced mod 2^d; for d = 12 they are reduced mod q (elements of Z_q).
+
+    Uses an integer bit-accumulator instead of materialising a bit list.
+    """
+    expected = (256 * d + 7) // 8
+    if len(data) != expected:
+        raise ValueError(
+            f"ByteDecode_{d}: expected {expected} bytes, got {len(data)}"
+        )
     m = (1 << d) if d < 12 else _Q
-    # Unpack bits
-    bits = []
-    for byte in data:
-        for j in range(8):
-            bits.append((byte >> j) & 1)
+    mask = (1 << d) - 1
+    acc = int.from_bytes(data, "little")
     f = []
-    for i in range(256):
-        val = 0
-        for j in range(d):
-            val |= bits[i * d + j] << j
-        f.append(val % m)
+    for _ in range(256):
+        f.append((acc & mask) % m)
+        acc >>= d
     return f
 
 
@@ -226,17 +236,22 @@ def _sample_cbd(data, eta):
     """FIPS 203 Algorithm 8: SamplePolyCBD_eta. Centered binomial distribution.
 
     For eta=2: each coefficient = (b0+b1) - (b2+b3) where b_i are individual bits.
+
+    Uses byte-wise popcount rather than expanding into a per-bit list.
     """
-    # Unpack all bits
-    bits = []
-    for byte in data:
-        for j in range(8):
-            bits.append((byte >> j) & 1)
+    # Convert input bytes to a single integer for fast bit extraction
+    stream = int.from_bytes(data, "little")
+    bits_per_coeff = 2 * eta  # 4 bits per coefficient for eta=2
 
     f = []
-    for i in range(256):
-        a_sum = sum(bits[2 * i * eta + j] for j in range(eta))
-        b_sum = sum(bits[2 * i * eta + eta + j] for j in range(eta))
+    for _ in range(256):
+        chunk = stream & ((1 << bits_per_coeff) - 1)
+        stream >>= bits_per_coeff
+        # popcount of lower eta bits minus popcount of upper eta bits
+        a_half = chunk & ((1 << eta) - 1)
+        b_half = chunk >> eta
+        a_sum = bin(a_half).count("1")
+        b_sum = bin(b_half).count("1")
         f.append((a_sum - b_sum) % _Q)
     return f
 
@@ -484,8 +499,10 @@ def ml_kem_keygen(seed=None):
     h_ek = _sha3_256(ek_pke)
     dk = dk_pke + ek_pke + h_ek + z
 
-    assert len(ek_pke) == 1184, f"EK size: {len(ek_pke)}"
-    assert len(dk) == 2400, f"DK size: {len(dk)}"
+    if len(ek_pke) != 1184:
+        raise RuntimeError(f"ML-KEM-768 EK must be 1184 bytes, got {len(ek_pke)}")
+    if len(dk) != 2400:
+        raise RuntimeError(f"ML-KEM-768 DK must be 2400 bytes, got {len(dk)}")
 
     return ek_pke, dk
 
@@ -524,7 +541,8 @@ def ml_kem_encaps(ek, randomness=None):
 
     ct = _k_pke_encrypt(ek, m, r)
 
-    assert len(ct) == 1088, f"CT size: {len(ct)}"
+    if len(ct) != 1088:
+        raise RuntimeError(f"ML-KEM-768 ciphertext must be 1088 bytes, got {len(ct)}")
 
     return ct, K
 
@@ -564,7 +582,13 @@ def ml_kem_decaps(dk, ct):
     g_output = _sha3_512(m_prime + h)
     K_prime, r_prime = g_output[:32], g_output[32:]
 
-    # Re-encrypt and compare (implicit rejection)
+    # Re-encrypt and compare (implicit rejection).
+    # Note on side-channel hardening: hmac.compare_digest is constant-time,
+    # but the Python-level if/else branch itself is a timing signal (the two
+    # paths may take different time).  A constant-time C/Rust implementation
+    # would use ct_select(flag, K_prime, K_bar) instead.  In pure Python,
+    # true constant-time selection is not achievable, so we accept this
+    # limitation and document it here for auditors.
     K_bar = _shake256(z + ct, 32)
     ct_prime = _k_pke_encrypt(ek_pke, m_prime, r_prime)
 

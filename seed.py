@@ -976,6 +976,9 @@ _QUANTUM_SEED_SIZES = {
     "ml-dsa-65": 32,            # xi seed for FIPS 204 KeyGen
     "slh-dsa-shake-128s": 48,   # SK.seed(16) + SK.prf(16) + PK.seed(16) for FIPS 205 (n=16)
     "ml-kem-768": 64,           # d (32B) || z (32B) for FIPS 203 KeyGen
+    # Hybrid classical + post-quantum (defense in depth)
+    "hybrid-dsa-65": 64,        # Ed25519 seed (32B) + ML-DSA-65 seed (32B)
+    "hybrid-kem-768": 96,       # X25519 seed (32B) + ML-KEM-768 seed (64B d||z)
 }
 
 
@@ -992,10 +995,13 @@ def get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0, _word_count
 
     Args:
         master_key: 64-byte master seed from get_seed().
-        algorithm: Post-quantum algorithm identifier string.
+        algorithm: Algorithm identifier string.
             "ml-dsa-65"          -> ML-DSA (Dilithium) FIPS 204, Level 3
             "slh-dsa-shake-128s" -> SLH-DSA (SPHINCS+) FIPS 205, Level 1
-        key_index: Instance index for multiple quantum keys (default 0).
+            "ml-kem-768"         -> ML-KEM (Kyber) FIPS 203, Level 3
+            "hybrid-dsa-65"      -> Ed25519 + ML-DSA-65 hybrid signature
+            "hybrid-kem-768"     -> X25519 + ML-KEM-768 hybrid KEM
+        key_index: Instance index for multiple keys (default 0).
             Allows deriving independent keypairs per algorithm.
         _word_count: Internal — word count of the source seed for entropy validation.
 
@@ -1003,6 +1009,9 @@ def get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0, _word_count
         bytes — seed material for keygen:
             ML-DSA-65:          32 bytes (xi seed)
             SLH-DSA-SHAKE-128s: 48 bytes (SK.seed || SK.prf || PK.seed, n=16 each)
+            ML-KEM-768:         64 bytes (d || z)
+            Hybrid-DSA-65:      64 bytes (Ed25519 seed 32B + ML-DSA seed 32B)
+            Hybrid-KEM-768:     96 bytes (X25519 seed 32B + ML-KEM seed 64B)
 
     Raises:
         ValueError: If master_key is not 64 bytes, algorithm is unknown,
@@ -1036,15 +1045,17 @@ def generate_quantum_keypair(master_key, algorithm="ml-dsa-65", key_index=0, _wo
 
     Args:
         master_key: 64-byte master seed from get_seed().
-        algorithm: "ml-dsa-65", "slh-dsa-shake-128s", or "ml-kem-768".
-        key_index: Instance index for multiple quantum keys (default 0).
+        algorithm: Algorithm identifier string.
+            "ml-dsa-65"          -> (4032B sk, 1952B pk)
+            "slh-dsa-shake-128s" -> (64B sk, 32B pk)
+            "ml-kem-768"         -> (2400B dk, 1184B ek)
+            "hybrid-dsa-65"      -> (4096B sk, 1984B pk)  Ed25519 + ML-DSA-65
+            "hybrid-kem-768"     -> (2432B dk, 1216B ek)  X25519 + ML-KEM-768
+        key_index: Instance index for multiple keys (default 0).
         _word_count: Internal — word count of the source seed for entropy validation.
 
     Returns:
-        (secret_key, public_key) tuple:
-            ML-DSA-65:          (4032B sk, 1952B pk)
-            SLH-DSA-SHAKE-128s: (64B sk, 32B pk)
-            ML-KEM-768:         (2400B dk, 1184B ek)
+        (secret_key, public_key) tuple with sizes per algorithm above.
 
     Raises:
         ValueError: If master_key is not 64 bytes, algorithm is unknown,
@@ -1060,6 +1071,13 @@ def generate_quantum_keypair(master_key, algorithm="ml-dsa-65", key_index=0, _wo
     elif algorithm == "ml-kem-768":
         from crypto.ml_kem import ml_kem_keygen
         ek, dk = ml_kem_keygen(quantum_seed)
+        return dk, ek  # (secret=dk, public=ek) to match (sk, pk) convention
+    elif algorithm == "hybrid-dsa-65":
+        from crypto.hybrid_dsa import hybrid_dsa_keygen
+        return hybrid_dsa_keygen(quantum_seed)
+    elif algorithm == "hybrid-kem-768":
+        from crypto.hybrid_kem import hybrid_kem_keygen
+        ek, dk = hybrid_kem_keygen(quantum_seed)
         return dk, ek  # (secret=dk, public=ek) to match (sk, pk) convention
     raise ValueError(f"Unknown quantum algorithm: {algorithm!r}")
 
