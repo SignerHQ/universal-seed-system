@@ -4,10 +4,11 @@
 
 ### The world's first quantum-safe visual + multilingual seed phrase system
 
-**272-bit entropy** · **Post-quantum signatures** · **42 languages** · **256 icons** · **16-bit checksum**
+**272-bit entropy** · **Hybrid quantum-safe crypto** · **42 languages** · **256 icons** · **16-bit checksum**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![Quantum Safe](https://img.shields.io/badge/Quantum-Safe-00d4aa?style=for-the-badge)](#-quantum-security)
+[![Hybrid Crypto](https://img.shields.io/badge/Hybrid-Classical_+_PQ-ff6b6b?style=for-the-badge)](#tier-3--hybrid-classical--post-quantum)
 [![Languages](https://img.shields.io/badge/Languages-42-blueviolet?style=for-the-badge)](#-supported-languages)
 [![Icons](https://img.shields.io/badge/Visual_Icons-256-orange?style=for-the-badge)](#-visual-icon-library)
 [![Entropy](https://img.shields.io/badge/Entropy-272_bit-brightgreen?style=for-the-badge)](#-entropy)
@@ -47,14 +48,35 @@
 
 The **36-word seed is quantum-safe by design**. Its 272-bit entropy survives Grover's algorithm with 136-bit post-quantum security — well above the 128-bit floor. The 24-word compact format (176-bit) is designed for classical use; for quantum-safe key derivation, **use 36 words**.
 
-Beyond the quantum-resistant seed, this system includes **two NIST-standardized post-quantum signature algorithms** for generating quantum-safe keypairs directly from your seed:
+Beyond the quantum-resistant seed, this system includes a **complete three-tier cryptography stack** — classical, post-quantum, and hybrid — all pure Python with zero external crypto dependencies. Every algorithm is derived deterministically from the same master seed using HKDF domain separation.
 
-| Algorithm | Standard | Security | Public Key | Signature | Assumption |
+### Tier 1 — Classical
+
+| Algorithm | Standard | Security | Public Key | Use |
+|:---|:---:|:---:|:---:|:---|
+| **Ed25519** | RFC 8032 | ~128-bit | 32 B | Digital signatures |
+| **X25519** | RFC 7748 | ~128-bit | 32 B | Diffie-Hellman key exchange |
+
+### Tier 2 — Post-Quantum
+
+| Algorithm | Standard | Security | Public Key | Signature / CT | Assumption |
 |:---|:---:|:---:|:---:|:---:|:---|
-| **ML-DSA-65** (Dilithium) | FIPS 204 | Level 3 (192-bit PQ) | 1,952 B | 3,309 B | Lattice (MLWE) |
-| **SLH-DSA-SHAKE-128s** (SPHINCS+) | FIPS 205 | Level 1 (128-bit PQ) | 32 B | 7,856 B | Hash-only (SHAKE-256) |
+| **ML-DSA-65** (Dilithium) | FIPS 204 | Level 3 (192-bit PQ) | 1,952 B | 3,309 B sig | Lattice (MLWE) |
+| **SLH-DSA-SHAKE-128s** (SPHINCS+) | FIPS 205 | Level 1 (128-bit PQ) | 32 B | 7,856 B sig | Hash-only (SHAKE-256) |
+| **ML-KEM-768** (Kyber) | FIPS 203 | Level 3 (192-bit PQ) | 1,184 B | 1,088 B ct | Lattice (MLWE) |
 
-Both are pure Python with zero external dependencies. Keypairs are derived deterministically from the same master key using HKDF domain separation — one seed backs both classical and post-quantum keys.
+### Tier 3 — Hybrid (Classical + Post-Quantum)
+
+Hybrid schemes combine a classical and post-quantum algorithm in **AND-composition** — security holds as long as *either* component remains unbroken. This provides defense in depth during the cryptographic transition period.
+
+| Algorithm | Components | Public Key | Signature / CT | Design |
+|:---|:---|:---:|:---:|:---|
+| **Hybrid-DSA-65** | Ed25519 + ML-DSA-65 | 1,984 B | 3,373 B sig | Both must verify |
+| **Hybrid-KEM-768** | X25519 + ML-KEM-768 | 1,216 B | 1,120 B ct | Secrets combined via HKDF |
+
+**Hybrid-DSA-65** — Both Ed25519 and ML-DSA-65 independently sign and verify every message. The Ed25519 component signs a domain-prefixed message (`hybrid-dsa-v1 + ctx + message`) to prevent **signature stripping attacks** — an adversary cannot extract the Ed25519 signature and present it as a valid standalone signature.
+
+**Hybrid-KEM-768** — X25519 ephemeral DH and ML-KEM-768 encapsulation each produce a shared secret. Both are combined via **ciphertext-bound HKDF**: the salt includes `SHA-256(x25519_ct || ml_kem_ct)`, preventing ciphertext substitution attacks. The domain string `hybrid-kem-v1` provides protocol separation.
 
 ```python
 from seed import generate_words, get_seed, generate_quantum_keypair
@@ -62,17 +84,48 @@ from seed import generate_words, get_seed, generate_quantum_keypair
 words = generate_words(36)
 seed  = get_seed(words, "passphrase")
 
-# ML-DSA-65 — fast lattice-based signatures (NIST Level 3)
-sk, pk = generate_quantum_keypair(seed, "ml-dsa-65")
+# Post-quantum signatures
+sk, pk = generate_quantum_keypair(seed, "ml-dsa-65")            # NIST Level 3 lattice
+sk, pk = generate_quantum_keypair(seed, "slh-dsa-shake-128s")   # NIST Level 1 hash-based
 
-# SLH-DSA-SHAKE-128s — conservative hash-based signatures (NIST Level 1)
-sk, pk = generate_quantum_keypair(seed, "slh-dsa-shake-128s")
+# Post-quantum key encapsulation
+ek, dk = generate_quantum_keypair(seed, "ml-kem-768")           # NIST Level 3 lattice KEM
 
-# ML-DSA-65 DEFAULT
+# Hybrid signatures — Ed25519 + ML-DSA-65
+sk, pk = generate_quantum_keypair(seed, "hybrid-dsa-65")
+
+# Hybrid key encapsulation — X25519 + ML-KEM-768
+ek, dk = generate_quantum_keypair(seed, "hybrid-kem-768")
+
+# Default is ML-DSA-65
 sk, pk = generate_quantum_keypair(seed)
 ```
 
-Classical ECC keys (secp256k1, Ed25519) will be broken by Shor's algorithm on quantum computers. These quantum keypairs ensure your seed remains secure and usable in a post-quantum world.
+### Using Hybrid Crypto Directly
+
+The `crypto/` module exposes all algorithms for direct use:
+
+```python
+from crypto import (
+    # Hybrid signatures
+    hybrid_dsa_keygen, hybrid_dsa_sign, hybrid_dsa_verify,
+    # Hybrid key encapsulation
+    hybrid_kem_keygen, hybrid_kem_encaps, hybrid_kem_decaps,
+)
+
+# Hybrid-DSA-65: sign and verify
+sk, pk = hybrid_dsa_keygen(seed_64_bytes)
+sig = hybrid_dsa_sign(b"message", sk, ctx=b"my-protocol")
+assert hybrid_dsa_verify(b"message", sig, pk, ctx=b"my-protocol")
+
+# Hybrid-KEM-768: encapsulate and decapsulate
+ek, dk = hybrid_kem_keygen(seed_96_bytes)
+ct, shared_secret_sender = hybrid_kem_encaps(ek)
+shared_secret_receiver = hybrid_kem_decaps(dk, ct)
+assert shared_secret_sender == shared_secret_receiver  # 32-byte shared secret
+```
+
+Classical ECC keys (secp256k1, Ed25519) will be broken by Shor's algorithm on quantum computers. The hybrid and post-quantum algorithms ensure your seed remains secure and usable in a post-quantum world — while the classical components provide a fallback if post-quantum assumptions are ever weakened.
 
 <br>
 
@@ -447,7 +500,9 @@ business = get_profile(seed, "business")       # completely unrelated key
 
 # Post-quantum keypair from the same seed
 from seed import generate_quantum_keypair
-sk, pk = generate_quantum_keypair(seed)
+sk, pk = generate_quantum_keypair(seed)                    # ML-DSA-65 (default)
+sk, pk = generate_quantum_keypair(seed, "hybrid-dsa-65")   # Ed25519 + ML-DSA-65 hybrid
+ek, dk = generate_quantum_keypair(seed, "hybrid-kem-768")  # X25519 + ML-KEM-768 hybrid
 
 # Also accepts plain word strings or raw indexes (must be 24 or 36 with valid checksum)
 plain = [w for _, w in words]          # extract word strings
@@ -559,8 +614,14 @@ print(kdf_info())
 | `verify_randomness` | `verify_randomness(sample_bytes=None, sample_size=2048, num_samples=5)` | `dict` — `{"pass": bool, "tests": [...], "summary": str}` |
 | `mouse_entropy` | class | Entropy collection pool |
 | `get_languages` | `get_languages()` | `list[(str, str)]` — (code, label) pairs |
-| `get_quantum_seed` | `get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0)` | `bytes` — raw quantum seed material (32 or 48 bytes) |
+| `get_quantum_seed` | `get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0)` | `bytes` — raw quantum seed material (32–96 bytes) |
 | `generate_quantum_keypair` | `generate_quantum_keypair(master_key, algorithm="ml-dsa-65", key_index=0)` | `tuple[bytes, bytes]` — (secret_key, public_key) |
+| `hybrid_dsa_keygen` | `hybrid_dsa_keygen(seed_64B)` | `tuple[bytes, bytes]` — (4,096B sk, 1,984B pk) |
+| `hybrid_dsa_sign` | `hybrid_dsa_sign(message, sk, ctx=b"")` | `bytes` — 3,373B hybrid signature |
+| `hybrid_dsa_verify` | `hybrid_dsa_verify(message, sig, pk, ctx=b"")` | `bool` — True if both Ed25519 AND ML-DSA verify |
+| `hybrid_kem_keygen` | `hybrid_kem_keygen(seed_96B)` | `tuple[bytes, bytes]` — (1,216B ek, 2,432B dk) |
+| `hybrid_kem_encaps` | `hybrid_kem_encaps(ek, randomness=None)` | `tuple[bytes, bytes]` — (1,120B ct, 32B shared_secret) |
+| `hybrid_kem_decaps` | `hybrid_kem_decaps(dk, ct)` | `bytes` — 32B shared secret |
 | `kdf_info` | `kdf_info()` | `str` — chained KDF pipeline description |
 
 <br>
