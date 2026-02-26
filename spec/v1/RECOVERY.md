@@ -176,14 +176,17 @@ the profile's existence cannot be detected.
 
 ---
 
-## Post-Quantum Key Recovery
+## Cryptographic Key Recovery
 
-If you derived quantum keypairs, the seeds are derived from the master key via HKDF-Expand:
+If you derived keypairs, the seeds are derived from the master key via HKDF-Expand:
 
 ```python
 _QUANTUM_SEED_SIZES = {
     "ml-dsa-65": 32,            # xi seed for FIPS 204 KeyGen
     "slh-dsa-shake-128s": 48,   # SK.seed(16) + SK.prf(16) + PK.seed(16)
+    "ml-kem-768": 64,           # d (32B) || z (32B) for FIPS 203 KeyGen
+    "hybrid-dsa-65": 64,        # Ed25519 seed (32B) + ML-DSA-65 seed (32B)
+    "hybrid-kem-768": 96,       # X25519 seed (32B) + ML-KEM-768 seed (64B d||z)
 }
 
 def get_quantum_seed(master_key, algorithm, key_index=0):
@@ -193,9 +196,42 @@ def get_quantum_seed(master_key, algorithm, key_index=0):
     return hkdf_expand(master_key, info, size)
 ```
 
-Feed the resulting seed into the appropriate FIPS keygen:
-- **ML-DSA-65 (FIPS 204):** 32-byte seed → `KeyGen(xi)` → (sk: 4,032 B, pk: 1,952 B)
-- **SLH-DSA-SHAKE-128s (FIPS 205):** 48-byte seed → `slh_keygen(seed)` → (sk: 64 B, pk: 32 B)
+Feed the resulting seed into the appropriate keygen:
+
+### Post-quantum algorithms
+
+- **ML-DSA-65 (FIPS 204):** 32-byte seed -> `KeyGen(xi)` -> (sk: 4,032 B, pk: 1,952 B)
+- **SLH-DSA-SHAKE-128s (FIPS 205):** 48-byte seed -> `slh_keygen(seed)` -> (sk: 64 B, pk: 32 B)
+- **ML-KEM-768 (FIPS 203):** 64-byte seed (d||z) -> `KeyGen(d, z)` -> (ek: 1,184 B, dk: 2,400 B)
+
+### Hybrid algorithms
+
+- **Hybrid-DSA-65 (Ed25519 + ML-DSA-65):**
+  64-byte seed -> first 32B to Ed25519 keygen, last 32B to ML-DSA-65 keygen
+  -> sk: 4,096 B (Ed25519 sk 64B + ML-DSA sk 4,032B)
+  -> pk: 1,984 B (Ed25519 pk 32B + ML-DSA pk 1,952B)
+
+- **Hybrid-KEM-768 (X25519 + ML-KEM-768):**
+  96-byte seed -> first 32B to X25519 keygen, last 64B to ML-KEM-768 keygen (d||z)
+  -> ek: 1,216 B (X25519 pk 32B + ML-KEM ek 1,184B)
+  -> dk: 2,432 B (X25519 sk 32B + ML-KEM dk 2,400B)
+
+### Hybrid DSA verification
+
+Both Ed25519 AND ML-DSA-65 must independently verify. The component signatures use
+domain separation to prevent stripping:
+- Ed25519 verifies: `b"hybrid-dsa-v1" || len(ctx) [1 byte] || ctx || message`
+- ML-DSA-65 verifies with context: `b"hybrid-dsa-v1\x00" || ctx`
+
+### Hybrid KEM shared secret recovery
+
+The two component shared secrets are combined via HKDF:
+```python
+salt = SHA-256(x25519_ct || ml_kem_ct)
+PRK  = HMAC-SHA256(salt, x25519_ss || ml_kem_ss)
+info = b"hybrid-kem-v1" || SHA-256(x25519_pk || ml_kem_ek) || 0x01
+SS   = HMAC-SHA256(PRK, info)
+```
 
 ---
 
@@ -233,8 +269,14 @@ was successful.
 | Argon2id salt | `b"universal-seed-v1-stretch-argon2id"` | Argon2id salt |
 | HKDF-Expand | `b"universal-seed-v1-master"` | info string |
 | Profile | `b"universal-seed-v1-profile"` | HMAC-SHA-512 message prefix |
-| Quantum ML-DSA | `b"universal-seed-v1-quantum-ml-dsa-65"` + index | HKDF-Expand info |
-| Quantum SLH-DSA | `b"universal-seed-v1-quantum-slh-dsa-shake-128s"` + index | HKDF-Expand info |
+| ML-DSA-65 | `b"universal-seed-v1-quantum-ml-dsa-65"` + index | HKDF-Expand info |
+| SLH-DSA | `b"universal-seed-v1-quantum-slh-dsa-shake-128s"` + index | HKDF-Expand info |
+| ML-KEM-768 | `b"universal-seed-v1-quantum-ml-kem-768"` + index | HKDF-Expand info |
+| Hybrid-DSA-65 | `b"universal-seed-v1-quantum-hybrid-dsa-65"` + index | HKDF-Expand info |
+| Hybrid-KEM-768 | `b"universal-seed-v1-quantum-hybrid-kem-768"` + index | HKDF-Expand info |
+| Hybrid DSA domain | `b"hybrid-dsa-v1"` | Stripping resistance prefix |
+| Hybrid KEM domain | `b"hybrid-kem-v1"` | HKDF info prefix |
+| Hybrid KEM fail | `b"hybrid-kem-x25519-fail"` | X25519 implicit rejection |
 
 ---
 

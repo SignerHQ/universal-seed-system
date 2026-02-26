@@ -117,11 +117,12 @@
     "with_passphrase": "first 4 bytes of full KDF output"
   },
 
-  "quantum": {
-    "algorithms": {
+  "crypto": {
+    "post_quantum": {
       "ml-dsa-65": {
         "standard": "FIPS 204",
         "name": "ML-DSA-65 (Dilithium)",
+        "type": "signature",
         "security_level": 3,
         "seed_size": 32,
         "public_key_size": 1952,
@@ -133,6 +134,7 @@
       "slh-dsa-shake-128s": {
         "standard": "FIPS 205",
         "name": "SLH-DSA-SHAKE-128s (SPHINCS+)",
+        "type": "signature",
         "security_level": 1,
         "seed_size": 48,
         "public_key_size": 32,
@@ -140,11 +142,95 @@
         "signature_size": 7856,
         "assumption": "Hash-only (SHAKE-256)",
         "info_prefix": "universal-seed-v1-quantum-slh-dsa-shake-128s"
+      },
+      "ml-kem-768": {
+        "standard": "FIPS 203",
+        "name": "ML-KEM-768 (Kyber)",
+        "type": "key_encapsulation",
+        "security_level": 3,
+        "seed_size": 64,
+        "encapsulation_key_size": 1184,
+        "decapsulation_key_size": 2400,
+        "ciphertext_size": 1088,
+        "shared_secret_size": 32,
+        "assumption": "Module Learning With Errors (MLWE)",
+        "implicit_rejection": true,
+        "info_prefix": "universal-seed-v1-quantum-ml-kem-768"
+      }
+    },
+    "classical": {
+      "ed25519": {
+        "standard": "RFC 8032",
+        "name": "Ed25519",
+        "type": "signature",
+        "public_key_size": 32,
+        "secret_key_size": 64,
+        "signature_size": 64,
+        "classical_security_bits": 128,
+        "note": "Used as component of hybrid-dsa-65, not derived standalone"
+      },
+      "x25519": {
+        "standard": "RFC 7748",
+        "name": "X25519",
+        "type": "key_exchange",
+        "private_key_size": 32,
+        "public_key_size": 32,
+        "shared_secret_size": 32,
+        "classical_security_bits": 128,
+        "note": "Used as component of hybrid-kem-768, not derived standalone"
+      }
+    },
+    "hybrid": {
+      "hybrid-dsa-65": {
+        "name": "Hybrid Ed25519 + ML-DSA-65",
+        "type": "signature",
+        "composition": "AND (both must verify)",
+        "seed_size": 64,
+        "public_key_size": 1984,
+        "secret_key_size": 4096,
+        "signature_size": 3373,
+        "context_max_bytes": 241,
+        "domain": "hybrid-dsa-v1",
+        "stripping_resistance": true,
+        "verify_after_sign": true,
+        "info_prefix": "universal-seed-v1-quantum-hybrid-dsa-65",
+        "components": {
+          "classical": "Ed25519 (first 32B of seed)",
+          "post_quantum": "ML-DSA-65 (last 32B of seed)"
+        }
+      },
+      "hybrid-kem-768": {
+        "name": "Hybrid X25519 + ML-KEM-768",
+        "type": "key_encapsulation",
+        "seed_size": 96,
+        "encapsulation_key_size": 1216,
+        "decapsulation_key_size": 2432,
+        "ciphertext_size": 1120,
+        "shared_secret_size": 32,
+        "domain": "hybrid-kem-v1",
+        "implicit_rejection": true,
+        "info_prefix": "universal-seed-v1-quantum-hybrid-kem-768",
+        "secret_combination": {
+          "method": "HKDF-SHA256",
+          "salt": "SHA-256(x25519_ct || ml_kem_ct)",
+          "info": "hybrid-kem-v1 || SHA-256(x25519_pk || ml_kem_ek) || 0x01",
+          "ciphertext_binding": true,
+          "public_key_binding": true
+        },
+        "components": {
+          "classical": "X25519 (first 32B of seed)",
+          "post_quantum": "ML-KEM-768 (last 64B of seed as d||z)"
+        }
       }
     },
     "derivation": {
       "method": "HKDF-Expand-SHA-512",
       "info_format": "<info_prefix> + key_index (4 bytes, little-endian uint32)"
+    },
+    "memory_hardening": {
+      "backend": "libsodium (via PyNaCl, optional)",
+      "features": ["sodium_mlock", "sodium_memzero", "sodium_munlock"],
+      "fallback": "manual byte zeroing"
     }
   },
 

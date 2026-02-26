@@ -197,6 +197,33 @@
       "key_index": 0,
       "seed_hex": "2f1d45974d4c2b818cbaeac0d7934ebf455593faa69d4b6272381886b273577b57137992c3910963b23452157b50d0eb",
       "seed_length": 48
+    },
+    {
+      "id": "quantum-ml-kem-seed-0",
+      "description": "ML-KEM-768 seed derivation, key_index=0",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "algorithm": "ml-kem-768",
+      "key_index": 0,
+      "seed_hex": "5103c034435a787875cb657702213d15c7baa86511b077b43642870a46be5de338c0dfc66e2b375a91cdbb23622ac4b565c51c70f926891607eaf803a1069f72",
+      "seed_length": 64
+    },
+    {
+      "id": "quantum-hybrid-dsa-seed-0",
+      "description": "Hybrid-DSA-65 seed derivation, key_index=0",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "algorithm": "hybrid-dsa-65",
+      "key_index": 0,
+      "seed_hex": "13a77c7130b1df15f7145e2f283d192c2cc5d75ec7a7f2bcf23a5a42744ad78af5611daa26bcc08dca3956972d440db3d3c6be132eb1d6d2aae04ed660f0cffc",
+      "seed_length": 64
+    },
+    {
+      "id": "quantum-hybrid-kem-seed-0",
+      "description": "Hybrid-KEM-768 seed derivation, key_index=0",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "algorithm": "hybrid-kem-768",
+      "key_index": 0,
+      "seed_hex": "b6f1b37921353864c3d6fe44b874c94d052d258cc07e566cf67ed3ebef050543be18f7b2c18c6495215eead851d613c47a195a7db2ef7641b456247f7cee3e2568513c1cb43100aa4b788b18ec08936777a388206cdcca51fb4da5abc9662e60",
+      "seed_length": 96
     }
   ],
   "quantum_keypairs": [
@@ -225,6 +252,47 @@
       "sig_length": 7856,
       "test_message_hex": "74657374206d657373616765",
       "signature_valid": true
+    },
+    {
+      "id": "quantum-ml-kem-keypair",
+      "description": "ML-KEM-768 full keypair from fixed master key",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "algorithm": "ml-kem-768",
+      "key_index": 0,
+      "ek_length": 1184,
+      "dk_length": 2400,
+      "ct_length": 1088,
+      "ss_length": 32,
+      "ek_first_32_hex": "2be8339245cc2914519f11ac4302b9535acb65b0576ad994ab648890942a72d4",
+      "encaps_decaps_roundtrip": true
+    },
+    {
+      "id": "quantum-hybrid-dsa-keypair",
+      "description": "Hybrid Ed25519 + ML-DSA-65 keypair from fixed master key",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "algorithm": "hybrid-dsa-65",
+      "key_index": 0,
+      "pk_length": 1984,
+      "sk_length": 4096,
+      "sig_length": 3373,
+      "test_message_hex": "74657374206d657373616765",
+      "pk_first_32_hex": "e85fea17439bec0626a275588281001fd17a71f5fc0a82018eb93903cdcd958d",
+      "signature_valid": true,
+      "note": "pk_first_32 is the Ed25519 public key component"
+    },
+    {
+      "id": "quantum-hybrid-kem-keypair",
+      "description": "Hybrid X25519 + ML-KEM-768 keypair from fixed master key",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "algorithm": "hybrid-kem-768",
+      "key_index": 0,
+      "ek_length": 1216,
+      "dk_length": 2432,
+      "ct_length": 1120,
+      "ss_length": 32,
+      "ek_first_32_hex": "5392caf0228f55fd43c75a12e5c5fcc59ba2d79aeb6aaaf797002b6761913157",
+      "encaps_decaps_roundtrip": true,
+      "note": "ek_first_32 is the X25519 public key component"
     }
   ]
 }

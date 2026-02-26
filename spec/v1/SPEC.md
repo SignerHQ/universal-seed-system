@@ -14,9 +14,10 @@
 ## 1. Overview
 
 The Universal Quantum Seed generates cryptographically secure seeds using 256 visual icons
-(8 bits each), derives hardened master keys through a 6-layer KDF pipeline, and supports
-post-quantum signature key generation via NIST FIPS 204 (ML-DSA-65) and FIPS 205
-(SLH-DSA-SHAKE-128s).
+(8 bits each), derives hardened master keys through a 6-layer KDF pipeline, and provides
+a three-tier cryptographic key derivation system: classical (Ed25519, X25519), post-quantum
+(ML-DSA-65, SLH-DSA-SHAKE-128s, ML-KEM-768), and hybrid (Ed25519+ML-DSA-65,
+X25519+ML-KEM-768).
 
 | Property | Value |
 |:---|:---|
@@ -29,7 +30,9 @@ post-quantum signature key generation via NIST FIPS 204 (ML-DSA-65) and FIPS 205
 | Fingerprint | 8-char hex (4 bytes = 32 bits) |
 | Domain separator | `b"universal-seed-v1"` |
 | Icon set | 256 icons, indexed 0-255 |
-| Post-quantum | ML-DSA-65 (FIPS 204) + SLH-DSA-SHAKE-128s (FIPS 205) |
+| Classical | Ed25519 (RFC 8032) + X25519 (RFC 7748) |
+| Post-quantum | ML-DSA-65 (FIPS 204) + SLH-DSA-SHAKE-128s (FIPS 205) + ML-KEM-768 (FIPS 203) |
+| Hybrid | Ed25519+ML-DSA-65 (signatures) + X25519+ML-KEM-768 (key encapsulation) |
 
 ---
 
@@ -306,23 +309,28 @@ fingerprint = key[0:4].hex().upper()
 
 ---
 
-## 9. Post-Quantum Key Derivation
+## 9. Cryptographic Key Derivation
 
-The master seed can derive post-quantum keypairs via HKDF-Expand with algorithm-specific
-domain separation. This ensures complete independence between classical keys and each
-quantum algorithm's keys.
+The master seed can derive keypairs for five algorithms across three security tiers via
+HKDF-Expand with algorithm-specific domain separation. This ensures complete independence
+between each algorithm's keys.
 
-> **The 36-word seed format (272-bit) is required for post-quantum key derivation.**
+> **The 36-word seed format (272-bit) is required for all key derivation in this section.**
 > ML-DSA-65 (NIST Level 3) requires at least 192-bit entropy; the 24-word format (176-bit)
-> does not meet this threshold. Implementations SHOULD enforce the 36-word minimum when
-> deriving quantum keypairs.
+> does not meet this threshold. Implementations MUST enforce the 36-word minimum when
+> deriving keypairs.
 
-### 9.1 Quantum Seed Derivation
+### 9.1 Seed Derivation
+
+All algorithms derive their keygen seeds from the master key via HKDF-Expand-SHA-512:
 
 ```python
 _QUANTUM_SEED_SIZES = {
     "ml-dsa-65": 32,            # xi seed for FIPS 204 KeyGen
     "slh-dsa-shake-128s": 48,   # SK.seed(16) + SK.prf(16) + PK.seed(16)
+    "ml-kem-768": 64,           # d (32B) || z (32B) for FIPS 203 KeyGen
+    "hybrid-dsa-65": 64,        # Ed25519 seed (32B) + ML-DSA-65 seed (32B)
+    "hybrid-kem-768": 96,       # X25519 seed (32B) + ML-KEM-768 seed (64B d||z)
 }
 
 def get_quantum_seed(master_key, algorithm, key_index=0):
@@ -335,8 +343,13 @@ def get_quantum_seed(master_key, algorithm, key_index=0):
 |:---|:---:|:---|
 | ML-DSA-65 | 32 bytes | `b"universal-seed-v1-quantum-ml-dsa-65"` + key_index (4 bytes LE) |
 | SLH-DSA-SHAKE-128s | 48 bytes | `b"universal-seed-v1-quantum-slh-dsa-shake-128s"` + key_index (4 bytes LE) |
+| ML-KEM-768 | 64 bytes | `b"universal-seed-v1-quantum-ml-kem-768"` + key_index (4 bytes LE) |
+| Hybrid-DSA-65 | 64 bytes | `b"universal-seed-v1-quantum-hybrid-dsa-65"` + key_index (4 bytes LE) |
+| Hybrid-KEM-768 | 96 bytes | `b"universal-seed-v1-quantum-hybrid-kem-768"` + key_index (4 bytes LE) |
 
-### 9.2 ML-DSA-65 (FIPS 204)
+### 9.2 Post-Quantum Signatures
+
+#### 9.2.1 ML-DSA-65 (FIPS 204)
 
 Lattice-based digital signature — NIST Security Level 3 (192-bit post-quantum).
 
@@ -349,7 +362,7 @@ Lattice-based digital signature — NIST Security Level 3 (192-bit post-quantum)
 | Assumption | Module Learning With Errors (MLWE) |
 | Dependencies | SHAKE-128, SHAKE-256, SHA-256/512 |
 
-### 9.3 SLH-DSA-SHAKE-128s (FIPS 205)
+#### 9.2.2 SLH-DSA-SHAKE-128s (FIPS 205)
 
 Hash-based digital signature — NIST Security Level 1 (128-bit post-quantum).
 
@@ -362,12 +375,151 @@ Hash-based digital signature — NIST Security Level 1 (128-bit post-quantum).
 | Assumption | Hash-only (SHAKE-256) |
 | Dependencies | SHAKE-256 only |
 
-### 9.4 Properties
+### 9.3 Post-Quantum Key Encapsulation
+
+#### 9.3.1 ML-KEM-768 (FIPS 203)
+
+Lattice-based key encapsulation mechanism — NIST Security Level 3 (192-bit post-quantum).
+
+| Property | Value |
+|:---|:---|
+| Standard | FIPS 203 |
+| Encapsulation key (public) | 1,184 bytes |
+| Decapsulation key (secret) | 2,400 bytes |
+| Ciphertext | 1,088 bytes |
+| Shared secret | 32 bytes |
+| Assumption | Module Learning With Errors (MLWE) |
+| Dependencies | SHA3-256, SHA3-512, SHAKE-256 |
+| Implicit rejection | Returns J(z \|\| ct) on decapsulation failure (IND-CCA2) |
+
+### 9.4 Classical Primitives
+
+Classical algorithms are used as components of the hybrid schemes (Sections 9.5–9.6).
+They are not derived standalone from the master seed; they are embedded within
+their respective hybrid keypairs.
+
+#### 9.4.1 Ed25519 (RFC 8032)
+
+Edwards-curve digital signature — ~128-bit classical security.
+
+| Property | Value |
+|:---|:---|
+| Standard | RFC 8032 |
+| Public key | 32 bytes |
+| Secret key | 64 bytes (seed \|\| public key) |
+| Signature | 64 bytes |
+| Curve | Edwards25519 (-x^2 + y^2 = 1 + dx^2y^2 mod p) |
+
+#### 9.4.2 X25519 (RFC 7748)
+
+Montgomery-curve Diffie-Hellman key exchange — ~128-bit classical security.
+
+| Property | Value |
+|:---|:---|
+| Standard | RFC 7748 |
+| Private key | 32 bytes (clamped scalar) |
+| Public key | 32 bytes (u-coordinate) |
+| Shared secret | 32 bytes |
+| Curve | Curve25519 (y^2 = x^3 + 486662x^2 + x mod p) |
+
+### 9.5 Hybrid Signatures — Ed25519 + ML-DSA-65
+
+AND-composition: both Ed25519 and ML-DSA-65 must independently verify for the hybrid
+signature to be valid. Security holds as long as *either* algorithm remains unbroken.
+
+| Property | Value |
+|:---|:---|
+| Secret key | 4,096 bytes (Ed25519 sk 64B + ML-DSA-65 sk 4,032B) |
+| Public key | 1,984 bytes (Ed25519 pk 32B + ML-DSA-65 pk 1,952B) |
+| Signature | 3,373 bytes (Ed25519 sig 64B + ML-DSA-65 sig 3,309B) |
+| Keygen seed | 64 bytes (first 32B → Ed25519, last 32B → ML-DSA-65) |
+| Context limit | 0–241 bytes |
+| Domain | `b"hybrid-dsa-v1"` |
+
+#### 9.5.1 Stripping Resistance
+
+Neither component signature can be extracted and used as a valid standalone signature:
+
+- **Ed25519** signs: `b"hybrid-dsa-v1" || len(ctx) [1 byte] || ctx || message`
+- **ML-DSA-65** uses context: `b"hybrid-dsa-v1" || 0x00 || ctx` (within FIPS 204 pure-mode formatting, which prepends `0x00 || len(ctx)` internally)
+
+This domain separation ensures ML-DSA signatures produced by the hybrid scheme are NOT
+valid standalone ML-DSA-65 signatures on the same (ctx, message) pair.
+
+#### 9.5.2 Verification
+
+Both component verifications are always evaluated (no short-circuit on first failure):
+
+```python
+def hybrid_dsa_verify(message, sig, pk, ctx=b""):
+    ed_sig, ml_sig = sig[:64], sig[64:]
+    ed_pk, ml_pk   = pk[:32], pk[32:]
+    ed_ok = ed25519_verify(b"hybrid-dsa-v1" + len(ctx).to_bytes(1,'big') + ctx + message, ed_sig, ed_pk)
+    ml_ok = ml_verify(message, ml_sig, ml_pk, ctx=b"hybrid-dsa-v1\x00" + ctx)
+    return ed_ok and ml_ok
+```
+
+#### 9.5.3 Fault Injection Countermeasure
+
+The sign function performs a composite verify-after-sign check before returning. If
+verification fails, signing raises an error rather than returning a potentially faulty
+signature.
+
+### 9.6 Hybrid Key Encapsulation — X25519 + ML-KEM-768
+
+Both shared secrets are combined via HKDF with ciphertext and public key binding.
+Security holds as long as *either* X25519 or ML-KEM-768 remains unbroken.
+
+| Property | Value |
+|:---|:---|
+| Encapsulation key (public) | 1,216 bytes (X25519 pk 32B + ML-KEM ek 1,184B) |
+| Decapsulation key (secret) | 2,432 bytes (X25519 sk 32B + ML-KEM dk 2,400B) |
+| Ciphertext | 1,120 bytes (X25519 ephemeral pk 32B + ML-KEM ct 1,088B) |
+| Shared secret | 32 bytes |
+| Keygen seed | 96 bytes (first 32B → X25519, last 64B → ML-KEM-768 d\|\|z) |
+| Domain | `b"hybrid-kem-v1"` |
+
+#### 9.6.1 Secret Combination
+
+The two component shared secrets are combined via ciphertext-bound and public-key-bound
+HKDF to produce the final 32-byte shared secret:
+
+```python
+salt = SHA-256(x25519_ct || ml_kem_ct)
+PRK  = HMAC-SHA256(salt, x25519_ss || ml_kem_ss)       # HKDF-Extract
+info = b"hybrid-kem-v1" || SHA-256(x25519_pk || ml_kem_ek) || 0x01
+SS   = HMAC-SHA256(PRK, info)                            # HKDF-Expand
+```
+
+- **Ciphertext binding** in the salt prevents ciphertext substitution attacks
+- **Public key binding** in the info prevents cross-recipient reuse
+- The domain string `"hybrid-kem-v1"` provides protocol separation
+
+#### 9.6.2 Implicit Rejection
+
+Both components use implicit rejection to prevent validity oracles:
+
+- **ML-KEM-768:** Returns K\_bar on ciphertext mismatch (FIPS 203 built-in IND-CCA2)
+- **X25519:** Constant-time fallback `HMAC-SHA256(sk, b"hybrid-kem-x25519-fail" || ct)` on low-order/invalid ephemeral keys, using branchless byte selection
+
+### 9.7 Memory Hardening
+
+When libsodium (via PyNaCl) is available, all signing, decapsulation, and keygen functions:
+
+- **`sodium_mlock`**: Lock secret key pages to prevent swapping to disk
+- **`sodium_memzero`**: Compiler-resistant wiping of secret intermediates in `finally` blocks
+- **`sodium_munlock`**: Unlock + zero pages on cleanup
+
+Without PyNaCl, falls back to manual byte zeroing (sufficient for CPython which does not
+perform dead-store elimination).
+
+### 9.8 Properties
 
 - **Deterministic** — same master seed + algorithm + key_index always produces the same keypair
-- **Independent** — ML-DSA and SLH-DSA keys are completely independent from each other and from classical keys
+- **Independent** — all five algorithms produce completely independent keys from each other
 - **Domain separated** — distinct HKDF info strings prevent cross-algorithm key reuse
-- **Expandable** — key_index allows multiple keypairs per algorithm
+- **Expandable** — key_index allows unlimited keypairs per algorithm
+- **Constant-time** — best-effort algorithmic constant-time (branchless conditional swaps, no data-dependent branches on secret values)
 
 ---
 
@@ -411,9 +563,17 @@ security exceeds ML-DSA-65's Level 3 requirement (96-bit PQ) and the 128-bit sec
 The 24-word format provides strong classical security but should not be used for post-quantum
 key derivation.
 
-The quantum signature algorithms (ML-DSA-65, SLH-DSA-SHAKE-128s) provide quantum-safe
-digital signatures for use cases where classical ECC (secp256k1, Ed25519) will be
-broken by Shor's algorithm.
+### Three-tier security model
+
+| Tier | Algorithms | Threat Model |
+|:---|:---|:---|
+| Classical | Ed25519, X25519 | Pre-quantum (~128-bit), broken by Shor's algorithm |
+| Post-quantum | ML-DSA-65, SLH-DSA-SHAKE-128s, ML-KEM-768 | NIST Level 1–3, safe against known quantum attacks |
+| Hybrid | Ed25519+ML-DSA-65, X25519+ML-KEM-768 | AND-composition: secure as long as *either* component holds |
+
+The hybrid tier provides defense-in-depth: if a flaw is discovered in ML-DSA or ML-KEM,
+the classical component still provides security (and vice versa). Hybrid schemes use
+domain separation to prevent signature/ciphertext stripping attacks.
 
 ### Protected against
 - Brute-force (272-bit entropy + chained KDF)
@@ -422,7 +582,11 @@ broken by Shor's algorithm.
 - Transcription errors (16-bit checksum)
 - Weak RNG (8 independent entropy sources, validated before use)
 - Fuzzy misresolution in KDF (strict mode)
-- Quantum computers (symmetric crypto + quantum signatures)
+- Quantum computers (symmetric crypto + post-quantum + hybrid signatures/KEM)
+- Signature stripping (hybrid domain separation)
+- Validity oracles (implicit rejection in ML-KEM and hybrid KEM)
+- Fault injection (verify-after-sign in hybrid DSA)
+- Memory forensics (libsodium mlock/memzero when available)
 
 ### NOT protected against
 - Physical seed theft (paper backup compromise)
