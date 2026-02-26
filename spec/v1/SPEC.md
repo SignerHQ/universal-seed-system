@@ -143,13 +143,15 @@ def verify_checksum(full_indexes):
 
 ## 5. Passphrase Normalization
 
-Passphrases are **raw UTF-8 bytes with no normalization**.
+Passphrases are **NFKC-normalized** before encoding to UTF-8 bytes.
 
 ```python
-passphrase_bytes = passphrase_string.encode("utf-8")
+import unicodedata
+passphrase_bytes = unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 ```
 
-- No NFKC/NFC normalization
+- **NFKC normalization** — prevents cross-platform fund loss from different Unicode
+  representations of the same visual characters (e.g. macOS NFD vs Windows NFC)
 - No whitespace trimming or case folding
 - Empty string `""` is equivalent to no passphrase
 

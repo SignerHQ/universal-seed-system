@@ -935,8 +935,11 @@ def get_seed(words, passphrase=""):
         payload += struct.pack("<BB", pos, idx)
 
     # Step 2: Mix passphrase into payload (influences every downstream step)
+    # NFKC normalization prevents cross-platform fund loss from different
+    # Unicode representations of the same visual characters (macOS NFD vs
+    # Windows NFC).
     if passphrase:
-        payload += passphrase.encode("utf-8")
+        payload += unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 
     # Step 3: HKDF-Extract — collapse payload + passphrase into fixed PRK
     prk = hmac.new(_DOMAIN, payload, hashlib.sha512).digest()

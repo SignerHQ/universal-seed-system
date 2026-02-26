@@ -28,7 +28,7 @@
 
   "passphrase": {
     "encoding": "UTF-8",
-    "normalization": "none",
+    "normalization": "NFKC",
     "trimming": false,
     "case_folding": false,
     "empty_equals_none": true

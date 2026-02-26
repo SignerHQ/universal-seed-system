@@ -80,14 +80,17 @@ This produces 44 bytes (24-word seed) or 68 bytes (36-word seed).
 
 ### Step 5: Passphrase Mixing
 
-If a passphrase was used, append its raw UTF-8 bytes:
+If a passphrase was used, NFKC-normalize it and append the UTF-8 bytes:
 
 ```python
+import unicodedata
+
 if passphrase:
-    payload += passphrase.encode("utf-8")
+    payload += unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 ```
 
-**No normalization** — the passphrase is used as-is (no NFKC, no trimming, no case folding).
+**NFKC normalization** ensures the same visual passphrase produces the same bytes
+regardless of platform (macOS NFD vs Windows NFC). No trimming or case folding.
 An empty string `""` produces the same result as no passphrase.
 
 ### Step 6: HKDF-Extract (RFC 5869)
