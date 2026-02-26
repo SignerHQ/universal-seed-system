@@ -358,7 +358,7 @@ stretched = Argon2id(secret=stage1, salt="universal-seed-v1-stretch-argon2id")
 Argon2id is the **winner of the Password Hashing Competition** (2015) and the current OWASP recommendation for high-value targets.
 
 ```bash
-pip install argon2-cffi   # required
+pip install argon2-cffi   # optional — ~100x faster, pure Python fallback included
 ```
 
 ### Layer 5 — HKDF-Expand (RFC 5869)
@@ -461,10 +461,10 @@ Everything lives in a single file — `seed.py`. Import it and you get seed gene
 ### Installation
 
 ```bash
-pip install argon2-cffi   # required — used in the chained KDF pipeline
+pip install argon2-cffi   # optional — ~100x faster, pure Python fallback included
 ```
 
-No other dependencies required. `seed.py` uses only Python standard library plus `argon2-cffi`.
+No external dependencies required. `seed.py` uses only the Python standard library and the bundled `crypto/argon2.py` module. Installing `argon2-cffi` is optional but recommended for performance (~100x faster Argon2id).
 
 ### Quick Start
 
@@ -1162,7 +1162,7 @@ A test app is included for trying out seed generation and recovery.
 
 ```bash
 pip install PySide6
-pip install argon2-cffi   # required for key derivation
+pip install argon2-cffi   # optional — faster key derivation
 python examples/universal.py
 ```
 
