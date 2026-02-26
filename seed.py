@@ -58,7 +58,7 @@ import threading
 import time
 import unicodedata
 
-from argon2.low_level import hash_secret_raw, Type as _Argon2Type
+from crypto.argon2 import hash_secret_raw, Type as _Argon2Type
 
 # 256 base English words — one per icon position (0–255)
 _BASE_WORDS = (

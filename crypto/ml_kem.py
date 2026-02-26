@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer.io — PolyForm Shield License 1.0.0
+# Copyright (c) 2026 Signer — MIT License
 
 """ML-KEM-768 (Kyber) — FIPS 203 post-quantum key encapsulation mechanism.
 
@@ -24,16 +24,44 @@ Public API:
     ml_kem_encaps(ek, randomness=None)  -> (ct_bytes, shared_secret)
     ml_kem_decaps(dk, ct)               -> shared_secret
 
-Notes:
-    - NOT constant-time: Python arithmetic leaks timing information. For
-      deployments where side-channel attacks are a concern, use a vetted
-      constant-time C/Rust implementation instead.
-    - Implicit rejection: decaps returns J(z || ct) on failure (IND-CCA2 safe).
+Constant-time hardening:
+    All arithmetic on secret-dependent data uses constant-time Barrett
+    reduction (replacing Python's variable-time ``%`` and ``//`` operators),
+    branchless conditional selection (replacing ``if/else`` on secret values),
+    and fixed-width masking to prevent arbitrary-precision integer growth.
+
+    While the CPython interpreter cannot provide hardware-level constant-time
+    guarantees (GC pauses, object allocation, dynamic dispatch), this
+    implementation eliminates all *algorithmic* timing channels:
+      - No data-dependent branches on secret values.
+      - No variable-time division/modulus on secret values.
+      - No early returns conditioned on secret comparisons.
+
+    Memory hardening (requires PyNaCl / libsodium, optional):
+      - sodium_memzero: compiler-resistant wiping of secret intermediates
+        (decrypted pre-key, candidate shared secrets, rejection secret, key
+        polynomials) in a finally block — secrets are wiped even on exceptions.
+      - sodium_mlock:   secret key pages are locked during decapsulation so
+        the OS never swaps them to disk (pagefile / swap partition).
+      - sodium_munlock:  pages are unlocked + zeroed on cleanup.
+      Without PyNaCl installed, falls back to manual byte zeroing (sufficient
+      for CPython which does not perform dead-store elimination) and no-op
+      for mlock/munlock.
+
+    Implicit rejection: decaps returns J(z || ct) on failure (IND-CCA2 safe).
 """
 
 import hashlib
 import hmac
 import os
+
+# libsodium (via PyNaCl) for secure memory operations.
+# Optional: gracefully degrades when PyNaCl is not installed.
+try:
+    from nacl._sodium import ffi as _ffi, lib as _lib
+    _HAS_SODIUM = True
+except ImportError:
+    _HAS_SODIUM = False
 
 # ── ML-KEM-768 Parameters (FIPS 203 Table 2) ────────────────────
 
@@ -65,6 +93,10 @@ _ROOT = 17
 # Precompute 128 zetas in bit-reversed order (FIPS 203 Section 4.3).
 _ZETAS = [pow(_ROOT, _bitrev7(i), _Q) for i in range(128)]
 
+# Multiplicative inverse of 128 mod q (for inverse NTT scaling).
+# 128 * 3303 = 422784 = 127 * 3329 + 1 ≡ 1 (mod 3329).
+_N_INV = 3303
+
 
 # ── Hash helpers (SHA-3 family) ──────────────────────────────────
 
@@ -81,10 +113,129 @@ def _shake256(data, length):
     return hashlib.shake_256(data).digest(length)
 
 
+# ── Constant-time utilities ──────────────────────────────────────
+#
+# These primitives eliminate data-dependent timing channels that Python's
+# built-in arithmetic operators (%, //) would otherwise introduce.
+#
+# Barrett reduction replaces variable-time division with fixed-point
+# multiplication and a single branchless conditional subtraction.
+# Branchless selection replaces if/else on secret-dependent values.
+
+# ── Secure memory utilities (libsodium-backed) ──────────────────
+#
+# sodium_memzero:  Compiler-resistant secure zeroing — prevents dead-store
+#                  elimination that could leave secrets in freed memory.
+# sodium_mlock:    Locks pages so the OS never swaps secret key material
+#                  to disk (swap partition / pagefile).
+# sodium_munlock:  Unlocks + zeros the pages on release.
+#
+# All helpers degrade gracefully to pure-Python fallbacks when PyNaCl is
+# not installed: manual byte zeroing (no DSE risk in CPython) and no-op
+# for mlock/munlock.
+
+
+def _secure_zero(buf):
+    """Securely wipe a mutable buffer (bytearray / memoryview).
+
+    Uses libsodium's sodium_memzero when available.  Immutable objects
+    (bytes) are silently skipped — callers should use bytearray for
+    any secret material that must be wiped.
+    """
+    if not isinstance(buf, (bytearray, memoryview)):
+        return
+    n = len(buf)
+    if n == 0:
+        return
+    if _HAS_SODIUM:
+        c_buf = _ffi.from_buffer(buf)
+        _lib.sodium_memzero(c_buf, n)
+    else:
+        for i in range(n):
+            buf[i] = 0
+
+
+def _mlock(buf):
+    """Lock memory pages to prevent swapping to disk.
+
+    Uses libsodium's sodium_mlock when available.
+    No-op when PyNaCl is not installed or buf is immutable.
+    """
+    if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
+        _lib.sodium_mlock(_ffi.from_buffer(buf), len(buf))
+
+
+def _munlock(buf):
+    """Unlock memory pages (also zeros the region).
+
+    Uses libsodium's sodium_munlock when available.
+    No-op when PyNaCl is not installed or buf is immutable.
+    """
+    if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
+        _lib.sodium_munlock(_ffi.from_buffer(buf), len(buf))
+
+
+# Barrett constant: floor(2^25 / 3329) = 10079.
+# Verified: 10079 * 3329 = 33,552,991 < 2^25 = 33,554,432.
+# Approximation error for x < q^2: x / 2^25 < 11,082,241 / 33,554,432 < 1.
+_BARRETT_SHIFT = 25
+_BARRETT_MULT = 10079
+
+
+def _ct_mod_q(x):
+    """Constant-time Barrett reduction: x mod q for 0 <= x < q^2.
+
+    Replaces Python's variable-time ``%`` operator with fixed-point
+    multiplication to approximate the quotient, followed by a single
+    branchless conditional subtraction.
+
+    Valid for inputs in [0, q^2) = [0, 11,082,241).
+    """
+    t = (x * _BARRETT_MULT) >> _BARRETT_SHIFT
+    r = x - t * 3329
+    # r is in [0, 2q).  Branchless conditional subtraction:
+    r_sub = r - 3329
+    # Python's arithmetic right-shift propagates the sign bit.
+    # For r < q: r_sub < 0, so (r_sub >> 15) & 1 == 1.
+    # For r >= q: r_sub >= 0, so (r_sub >> 15) & 1 == 0.
+    # (Safe because |r_sub| < 2^13 < 2^15.)
+    sign = (r_sub >> 15) & 1
+    mask = (-sign) & 0xFFFF          # 0xFFFF when r < q, 0x0000 otherwise
+    return (r & mask) | (r_sub & (mask ^ 0xFFFF))
+
+
+def _ct_div_q(x):
+    """Constant-time floor(x / q) for 0 <= x < 2^22.
+
+    Used by compression to replace variable-time ``//`` division by q.
+    Same Barrett approximation with a +1 correction when the quotient
+    is underestimated.
+    """
+    t = (x * _BARRETT_MULT) >> _BARRETT_SHIFT
+    r = x - t * 3329
+    adj = r - 3329
+    # sign == 1 when adj < 0, meaning t is already exact.
+    sign = (adj >> 15) & 1
+    return t + 1 - sign
+
+
+def _ct_select_bytes(flag, a, b):
+    """Return *a* if flag is truthy, *b* otherwise.  Constant-time.
+
+    Expands *flag* (0/1 or bool) into a per-byte mask without any
+    data-dependent branch.  Both *a* and *b* are always fully read.
+    """
+    f = int(bool(flag)) & 1
+    # f=1 → m=0xFF (select a), f=0 → m=0x00 (select b).
+    m = ((f - 1) & 0xFF) ^ 0xFF
+    nm = m ^ 0xFF
+    return bytes((ai & m) | (bi & nm) for ai, bi in zip(a, b))
+
+
 # ── Polynomial arithmetic ────────────────────────────────────────
 
 def _ntt(f):
-    """Forward NTT: polynomial → NTT domain. In-place on a copy."""
+    """Forward NTT: polynomial -> NTT domain. In-place on a copy."""
     a = list(f)
     k = 1
     length = 128
@@ -94,16 +245,16 @@ def _ntt(f):
             zeta = _ZETAS[k]
             k += 1
             for j in range(start, start + length):
-                t = (zeta * a[j + length]) % _Q
-                a[j + length] = (a[j] - t) % _Q
-                a[j] = (a[j] + t) % _Q
+                t = _ct_mod_q(zeta * a[j + length])
+                a[j + length] = _ct_mod_q(a[j] + _Q - t)
+                a[j] = _ct_mod_q(a[j] + t)
             start += 2 * length
         length >>= 1
     return a
 
 
 def _ntt_inv(f):
-    """Inverse NTT: NTT domain → polynomial. In-place on a copy."""
+    """Inverse NTT: NTT domain -> polynomial. In-place on a copy."""
     a = list(f)
     k = 127
     length = 2
@@ -114,14 +265,13 @@ def _ntt_inv(f):
             k -= 1
             for j in range(start, start + length):
                 t = a[j]
-                a[j] = (t + a[j + length]) % _Q
-                a[j + length] = (zeta * (a[j + length] - t)) % _Q
+                a[j] = _ct_mod_q(t + a[j + length])
+                a[j + length] = _ct_mod_q(
+                    zeta * _ct_mod_q(a[j + length] + _Q - t)
+                )
             start += 2 * length
         length <<= 1
-    # Multiply by 128^{-1} mod q = 3303.
-    # ML-KEM NTT has 7 levels (len=128 down to len=2), factor is 2^7 = 128.
-    n_inv = pow(128, _Q - 2, _Q)  # 3303
-    return [(x * n_inv) % _Q for x in a]
+    return [_ct_mod_q(x * _N_INV) for x in a]
 
 
 def _basecasemultiply(a0, a1, b0, b1, gamma):
@@ -130,9 +280,15 @@ def _basecasemultiply(a0, a1, b0, b1, gamma):
     FIPS 203 Algorithm 12: BaseCaseMultiply.
     (a0 + a1*X)(b0 + b1*X) mod (X^2 - gamma) =
         (a0*b0 + a1*b1*gamma) + (a0*b1 + a1*b0)*X
+
+    Intermediate products are reduced via Barrett reduction to keep
+    operands bounded below q^2 at each multiplication step.
     """
-    c0 = (a0 * b0 + a1 * b1 * gamma) % _Q
-    c1 = (a0 * b1 + a1 * b0) % _Q
+    c0 = _ct_mod_q(
+        _ct_mod_q(a0 * b0)
+        + _ct_mod_q(_ct_mod_q(a1 * b1) * gamma)
+    )
+    c1 = _ct_mod_q(_ct_mod_q(a0 * b1) + _ct_mod_q(a1 * b0))
     return c0, c1
 
 
@@ -145,21 +301,23 @@ def _multiply_ntts(f, g):
     h = [0] * 256
     for i in range(64):
         z0 = _ZETAS[64 + i]
-        # First pair: indices 2i, 2i+1 with gamma = zeta^(2*bitrev7(i)+1)
+        # First pair: gamma = zeta
         h[4*i], h[4*i+1] = _basecasemultiply(
             f[4*i], f[4*i+1], g[4*i], g[4*i+1], z0)
-        # Second pair: indices 2i+128, 2i+129 with gamma = -zeta
+        # Second pair: gamma = -zeta (constant-time negation mod q)
         h[4*i+2], h[4*i+3] = _basecasemultiply(
-            f[4*i+2], f[4*i+3], g[4*i+2], g[4*i+3], (-z0) % _Q)
+            f[4*i+2], f[4*i+3], g[4*i+2], g[4*i+3],
+            _ct_mod_q(_Q - z0))
     return h
 
 
 def _poly_add(a, b):
-    return [(a[i] + b[i]) % _Q for i in range(256)]
+    return [_ct_mod_q(a[i] + b[i]) for i in range(256)]
 
 
 def _poly_sub(a, b):
-    return [(a[i] - b[i]) % _Q for i in range(256)]
+    # Add _Q before subtracting to keep the value non-negative for Barrett.
+    return [_ct_mod_q(a[i] + _Q - b[i]) for i in range(256)]
 
 
 # ── Byte encoding / decoding ────────────────────────────────────
@@ -168,26 +326,29 @@ def _byte_encode(f, d):
     """FIPS 203 Algorithm 5: ByteEncode_d.
 
     Encode 256 integers into a byte string.  For d < 12 the coefficients
-    are taken mod 2^d; for d = 12 they are elements of Z_q (mod 3329).
+    are masked to d bits (constant-time); for d = 12 they are reduced
+    mod q via Barrett reduction.
 
     Uses an integer bit-accumulator instead of materialising a bit list.
     """
-    m = (1 << d) if d < 12 else _Q
+    mask = (1 << d) - 1
     total_bits = 256 * d
     acc = 0          # running bit-accumulator
     bit_pos = 0      # current bit position in acc
     for coeff in f:
-        acc |= (coeff % m) << bit_pos
+        # Branch on d (public parameter, not secret data).
+        val = _ct_mod_q(coeff) if d == 12 else (coeff & mask)
+        acc |= val << bit_pos
         bit_pos += d
-    out = bytearray(acc.to_bytes((total_bits + 7) // 8, "little"))
-    return bytes(out)
+    return bytes(acc.to_bytes((total_bits + 7) // 8, "little"))
 
 
 def _byte_decode(data, d):
     """FIPS 203 Algorithm 6: ByteDecode_d.
 
     Decode a byte string into 256 integers.  For d < 12 the values are
-    reduced mod 2^d; for d = 12 they are reduced mod q (elements of Z_q).
+    masked to d bits; for d = 12 they are reduced mod q via Barrett
+    reduction.
 
     Uses an integer bit-accumulator instead of materialising a bit list.
     """
@@ -196,12 +357,12 @@ def _byte_decode(data, d):
         raise ValueError(
             f"ByteDecode_{d}: expected {expected} bytes, got {len(data)}"
         )
-    m = (1 << d) if d < 12 else _Q
     mask = (1 << d) - 1
     acc = int.from_bytes(data, "little")
     f = []
     for _ in range(256):
-        f.append((acc & mask) % m)
+        raw = acc & mask
+        f.append(_ct_mod_q(raw) if d == 12 else raw)
         acc >>= d
     return f
 
@@ -213,6 +374,10 @@ def _sample_ntt(seed, i, j):
 
     Uses XOF = SHAKE-128(seed || j || i) to produce uniform coefficients mod q.
     Note: FIPS 203 uses (j, i) order for the matrix indices.
+
+    Timing note: rejection sampling operates on *public* randomness (rho is
+    part of the encapsulation key), so data-dependent loop counts do not
+    leak secret information.
     """
     xof_input = seed + bytes([j, i])
     # Generate enough bytes (conservative: ~960 bytes for 256 coefficients)
@@ -238,6 +403,8 @@ def _sample_cbd(data, eta):
     For eta=2: each coefficient = (b0+b1) - (b2+b3) where b_i are individual bits.
 
     Uses byte-wise popcount rather than expanding into a per-bit list.
+    The subtraction is offset by +q to keep the value non-negative for
+    constant-time Barrett reduction.
     """
     # Convert input bytes to a single integer for fast bit extraction
     stream = int.from_bytes(data, "little")
@@ -252,22 +419,31 @@ def _sample_cbd(data, eta):
         b_half = chunk >> eta
         a_sum = a_half.bit_count()
         b_sum = b_half.bit_count()
-        f.append((a_sum - b_sum) % _Q)
+        # Add _Q before subtraction to keep non-negative for Barrett.
+        f.append(_ct_mod_q(a_sum + _Q - b_sum))
     return f
 
 
 # ── Compression / decompression ──────────────────────────────────
 
 def _compress(x, d):
-    """Compress: round(2^d / q * x) mod 2^d."""
+    """Compress: round(2^d / q * x) mod 2^d.  Constant-time.
+
+    Uses Barrett division (_ct_div_q) instead of Python's variable-time
+    ``//`` operator.  The final mod 2^d is a constant-time bit-mask.
+    """
     m = 1 << d
-    return ((x * m + _Q // 2) // _Q) % m
+    numerator = x * m + (_Q >> 1)
+    return _ct_div_q(numerator) & (m - 1)
 
 
 def _decompress(y, d):
-    """Decompress: round(q / 2^d * y)."""
+    """Decompress: round(q / 2^d * y).
+
+    Division by 2^d is a constant-time right-shift.
+    """
     m = 1 << d
-    return (y * _Q + m // 2) // m
+    return (y * _Q + (m >> 1)) >> d
 
 
 def _compress_poly(f, d):
@@ -549,6 +725,10 @@ def ml_kem_decaps(dk, ct):
     Performs the §7.2 hash check on dk, then runs Decaps_internal
     with implicit rejection for IND-CCA2 security.
 
+    Constant-time: the comparison result is used via branchless
+    _ct_select_bytes rather than an if/else branch, ensuring both
+    code paths execute in identical time.
+
     Args:
         dk: 2,400-byte decapsulation key.
         ct: 1,088-byte ciphertext.
@@ -565,28 +745,52 @@ def ml_kem_decaps(dk, ct):
         raise ValueError("Decapsulation key failed FIPS 203 hash check (§7.2)")
 
     # Parse DK = dk_pke || ek_pke || h || z
-    dk_pke = dk[:384*_K]           # 1152 bytes
-    ek_pke = dk[384*_K:384*_K+1184]  # 1184 bytes
-    h = dk[384*_K+1184:384*_K+1184+32]  # 32 bytes
-    z = dk[384*_K+1184+32:]        # 32 bytes
+    # Secret components use bytearray so they can be securely wiped.
+    dk_pke = bytearray(dk[:384*_K])           # 1152 bytes — SECRET
+    ek_pke = dk[384*_K:384*_K+1184]           # 1184 bytes — public
+    h = dk[384*_K+1184:384*_K+1184+32]        # 32 bytes   — public hash
+    z = bytearray(dk[384*_K+1184+32:])        # 32 bytes   — SECRET
 
-    # Decrypt to recover m'
-    m_prime = _k_pke_decrypt(dk_pke, ct)
+    # Lock secret pages to prevent swapping to disk.
+    _mlock(dk_pke)
+    _mlock(z)
 
-    # (K', r') = G(m' || h)
-    g_output = _sha3_512(m_prime + h)
-    K_prime, r_prime = g_output[:32], g_output[32:]
+    # All secret intermediates are bytearray for secure wiping.
+    m_prime = bytearray()
+    g_output = bytearray()
+    K_prime = bytearray()
+    r_prime = bytearray()
+    K_bar = bytearray()
+    try:
+        # Decrypt to recover m'
+        m_prime = bytearray(_k_pke_decrypt(bytes(dk_pke), ct))
 
-    # Re-encrypt and compare (implicit rejection).
-    # Note on side-channel hardening: hmac.compare_digest is constant-time,
-    # but the Python-level if/else branch itself is a timing signal (the two
-    # paths may take different time).  A constant-time C/Rust implementation
-    # would use ct_select(flag, K_prime, K_bar) instead.  In pure Python,
-    # true constant-time selection is not achievable, so we accept this
-    # limitation and document it here for auditors.
-    K_bar = _shake256(z + ct, 32)
-    ct_prime = _k_pke_encrypt(ek_pke, m_prime, r_prime)
+        # (K', r') = G(m' || h)
+        g_output = bytearray(_sha3_512(bytes(m_prime) + h))
+        K_prime = bytearray(g_output[:32])
+        r_prime = bytearray(g_output[32:])
 
-    if hmac.compare_digest(ct, ct_prime):
-        return K_prime
-    return K_bar
+        # Implicit rejection value (always computed).
+        K_bar = bytearray(_shake256(bytes(z) + ct, 32))
+
+        # Re-encrypt to verify ciphertext integrity.
+        ct_prime = _k_pke_encrypt(ek_pke, bytes(m_prime), bytes(r_prime))
+
+        # Constant-time selection: return K_prime if ct == ct_prime, else K_bar.
+        # hmac.compare_digest is C-backed constant-time comparison.
+        # _ct_select_bytes is branchless — no if/else on the secret flag.
+        flag = hmac.compare_digest(ct, ct_prime)
+        return _ct_select_bytes(flag, bytes(K_prime), bytes(K_bar))
+    finally:
+        # Wipe ALL secret intermediates — the non-selected key is especially
+        # sensitive since it must never be observable by an attacker.
+        _secure_zero(m_prime)
+        _secure_zero(g_output)
+        _secure_zero(K_prime)
+        _secure_zero(r_prime)
+        _secure_zero(K_bar)
+        # Unlock + zero the secret key components.
+        _munlock(dk_pke)
+        _munlock(z)
+        _secure_zero(dk_pke)
+        _secure_zero(z)

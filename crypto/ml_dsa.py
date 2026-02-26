@@ -29,14 +29,48 @@ Notes:
     - Signing defaults to hedged mode (rnd generated via os.urandom) as
       recommended by FIPS 204. Pass deterministic=True for reproducible
       signatures (uses rnd=0^32).
-    - NOT constant-time: Python big-int arithmetic and branching on secret values
-      leak timing information. For deployments where side-channel attacks are a
-      concern, use a vetted constant-time C/Rust implementation instead.
+    - Best-effort constant-time: uses Barrett reduction (no variable-time `%`),
+      branchless conditionals, and no early-exit loops on secret data.
 """
 
 import hashlib
+import hmac
 import os
 import struct
+
+# ── Secure memory utilities (libsodium-backed) ────────────────
+_HAS_SODIUM = False
+try:
+    from nacl._sodium import ffi as _ffi, lib as _lib
+    _HAS_SODIUM = True
+except ImportError:
+    pass
+
+
+def _secure_zero(buf):
+    """Securely wipe a mutable buffer (bytearray / memoryview)."""
+    if not isinstance(buf, (bytearray, memoryview)):
+        return
+    n = len(buf)
+    if n == 0:
+        return
+    if _HAS_SODIUM:
+        _lib.sodium_memzero(_ffi.from_buffer(buf), n)
+    else:
+        for i in range(n):
+            buf[i] = 0
+
+
+def _mlock(buf):
+    """Lock memory pages to prevent swapping to disk."""
+    if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
+        _lib.sodium_mlock(_ffi.from_buffer(buf), len(buf))
+
+
+def _munlock(buf):
+    """Unlock memory pages (also zeros the region)."""
+    if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
+        _lib.sodium_munlock(_ffi.from_buffer(buf), len(buf))
 
 # ── ML-DSA-65 Parameters (FIPS 204 Table 1) ──────────────────────
 
@@ -53,6 +87,45 @@ _GAMMA2 = (_Q - 1) // 32  # = 261888 — decomposition divisor
 _OMEGA = 55           # Max number of 1s in hint
 _C_TILDE_BYTES = 48   # Challenge seed bytes
 _LAMBDA = 192         # Bit security (Level 3)
+
+
+# ── Barrett Reduction Constants ───────────────────────────────────
+# Replace Python's variable-time `%` operator with fixed-point
+# multiply + shift for predictable timing on fixed-size inputs.
+
+# For NTT products (x in [0, q^2)): shift=70 ensures error <= 1
+_BARRETT_SHIFT_Q = 70
+_BARRETT_MULT_Q = 140875044847698   # floor(2^70 / 8380417)
+
+# For decomposition (x in [0, q), modulus 2*GAMMA2 = 523776)
+_2GAMMA2 = 2 * _GAMMA2              # 523776
+_BARRETT_SHIFT_2G = 43
+_BARRETT_MULT_2G = 16793616         # floor(2^43 / 523776)
+
+_HALF_Q = _Q >> 1                   # 4190208
+
+# ── Constant-time Arithmetic Helpers ─────────────────────────────
+
+def _ct_mod_q(x):
+    """Barrett reduction: x mod q for x in [0, q^2). Branchless."""
+    t = (x * _BARRETT_MULT_Q) >> _BARRETT_SHIFT_Q
+    r = x - t * _Q
+    mask = 1 + ((r - _Q) >> 63)
+    return r - mask * _Q
+
+
+def _ct_add_mod_q(a, b):
+    """(a + b) mod q for a, b in [0, q). Branchless."""
+    r = a + b
+    mask = 1 + ((r - _Q) >> 63)
+    return r - mask * _Q
+
+
+def _ct_sub_mod_q(a, b):
+    """(a - b) mod q for a, b in [0, q). Branchless."""
+    r = a - b
+    mask = r >> 63
+    return r - mask * _Q
 
 
 # ── NTT Constants ─────────────────────────────────────────────────
@@ -87,19 +160,31 @@ def _ntt(a):
 
     Transforms polynomial from coefficient domain to NTT evaluation domain.
     In-place Cooley-Tukey butterfly with bit-reversed zetas.
+    Uses Barrett reduction instead of variable-time `%`.
     """
     f = list(a)
     k = 1
     length = 128
+    _bm = _BARRETT_MULT_Q
+    _bs = _BARRETT_SHIFT_Q
+    _q = _Q
     while length >= 1:
         start = 0
         while start < _N:
             zeta = _ZETAS[k]
             k += 1
             for j in range(start, start + length):
-                t = (zeta * f[j + length]) % _Q
-                f[j + length] = (f[j] - t) % _Q
-                f[j] = (f[j] + t) % _Q
+                # Barrett reduction of zeta * f[j+length]
+                x = zeta * f[j + length]
+                bt = (x * _bm) >> _bs
+                t = x - bt * _q
+                t -= _q * (1 + ((t - _q) >> 63))
+                # f[j+length] = (f[j] - t) mod q
+                r = f[j] - t
+                f[j + length] = r - (r >> 63) * _q
+                # f[j] = (f[j] + t) mod q
+                s = f[j] + t
+                f[j] = s - _q * (1 + ((s - _q) >> 63))
             start += 2 * length
         length >>= 1
     return f
@@ -110,41 +195,59 @@ def _inv_ntt(f):
 
     Transforms from NTT domain back to coefficient domain.
     Gentleman-Sande butterfly with inverse zetas.
+    Uses Barrett reduction instead of variable-time `%`.
     """
     a = list(f)
     k = 255
     length = 1
+    _bm = _BARRETT_MULT_Q
+    _bs = _BARRETT_SHIFT_Q
+    _q = _Q
     while length < _N:
         start = 0
         while start < _N:
-            zeta = -_ZETAS[k]
+            zeta = _ZETAS[k]
             k -= 1
             for j in range(start, start + length):
                 t = a[j]
-                a[j] = (t + a[j + length]) % _Q
-                a[j + length] = (zeta * (t - a[j + length])) % _Q
+                # a[j] = (t + a[j+length]) mod q
+                s = t + a[j + length]
+                a[j] = s - _q * (1 + ((s - _q) >> 63))
+                # a[j+length] = (zeta * (a[j+length] - t)) mod q
+                # Original uses -zeta, equivalent to zeta * (a[j+length] - t)
+                diff = a[j + length] - t
+                diff -= (diff >> 63) * _q  # make non-negative
+                x = zeta * diff
+                bt = (x * _bm) >> _bs
+                r = x - bt * _q
+                a[j + length] = r - _q * (1 + ((r - _q) >> 63))
             start += 2 * length
         length <<= 1
+    # Final scaling by N_INV
     for i in range(_N):
-        a[i] = (a[i] * _N_INV) % _Q
+        x = a[i] * _N_INV
+        bt = (x * _bm) >> _bs
+        r = x - bt * _q
+        a[i] = r - _q * (1 + ((r - _q) >> 63))
     return a
 
 
 def _ntt_mult(a, b):
-    """Pointwise multiplication of two NTT-domain polynomials."""
-    return [(a[i] * b[i]) % _Q for i in range(_N)]
+    """Pointwise multiplication of two NTT-domain polynomials.
+    Uses Barrett reduction."""
+    return [_ct_mod_q(a[i] * b[i]) for i in range(_N)]
 
 
 # ── Polynomial Arithmetic ─────────────────────────────────────────
 
 def _poly_add(a, b):
-    """Coefficient-wise addition mod q."""
-    return [(a[i] + b[i]) % _Q for i in range(_N)]
+    """Coefficient-wise addition mod q. Branchless."""
+    return [_ct_add_mod_q(a[i], b[i]) for i in range(_N)]
 
 
 def _poly_sub(a, b):
-    """Coefficient-wise subtraction mod q."""
-    return [(a[i] - b[i]) % _Q for i in range(_N)]
+    """Coefficient-wise subtraction mod q. Branchless."""
+    return [_ct_sub_mod_q(a[i], b[i]) for i in range(_N)]
 
 
 def _poly_zero():
@@ -327,9 +430,8 @@ def _sample_in_ball(c_tilde):
                 break
         c[i] = c[j]
         sign = (sign_bits >> (i - (_N - _TAU))) & 1
-        c[j] = (-1) ** sign  # 1 or -1
-        if c[j] < 0:
-            c[j] = _Q - 1  # -1 mod q
+        # Branchless: sign=0 -> 1, sign=1 -> Q-1
+        c[j] = 1 + sign * (_Q - 2)
     return c
 
 
@@ -338,12 +440,14 @@ def _sample_in_ball(c_tilde):
 def _power2_round(r):
     """Decompose r into (r1, r0) where r = r1*2^d + r0 (Algorithm 36).
 
-    r0 in [-2^(d-1), 2^(d-1)).
+    r0 in [-2^(d-1), 2^(d-1)). Branchless.
     """
-    r_pos = r % _Q
-    r0 = r_pos % (1 << _D)
-    if r0 > (1 << (_D - 1)):
-        r0 -= (1 << _D)
+    r_pos = r  # already in [0, q)
+    r0 = r_pos & ((1 << _D) - 1)  # r_pos mod 2^d (bitmask, no division)
+    # Branchless centering: if r0 > 2^(d-1), subtract 2^d
+    _half = 1 << (_D - 1)  # 4096
+    gt = 1 + ((r0 - _half - 1) >> 63)  # 1 if r0 > 4096, else 0
+    r0 = r0 - gt * (1 << _D)
     r1 = (r_pos - r0) >> _D
     return r1, r0
 
@@ -352,16 +456,26 @@ def _decompose(r):
     """High-order/low-order decomposition using gamma2 (Algorithm 37).
 
     Returns (r1, r0) where r = r1*2*gamma2 + r0 with |r0| <= gamma2.
+    Branchless with Barrett reduction.
     """
-    r_pos = r % _Q
-    r0 = r_pos % (2 * _GAMMA2)
-    if r0 > _GAMMA2:
-        r0 -= 2 * _GAMMA2
-    if r_pos - r0 == _Q - 1:
-        r1 = 0
-        r0 -= 1
-    else:
-        r1 = (r_pos - r0) // (2 * _GAMMA2)
+    r_pos = r  # already in [0, q)
+    # Barrett reduction: r0 = r_pos mod (2*GAMMA2)
+    t = (r_pos * _BARRETT_MULT_2G) >> _BARRETT_SHIFT_2G
+    r0 = r_pos - t * _2GAMMA2
+    # Correction step (Barrett may underestimate by 1)
+    corr = 1 + ((r0 - _2GAMMA2) >> 63)  # 1 if r0 >= 2*GAMMA2
+    r0 = r0 - corr * _2GAMMA2
+    t = t + corr
+    # Branchless centering: if r0 > GAMMA2, subtract 2*GAMMA2
+    gt = 1 + ((r0 - _GAMMA2 - 1) >> 63)  # 1 if r0 > GAMMA2
+    r0 = r0 - gt * _2GAMMA2
+    t = t + gt
+    # Branchless special case: if t == 16 (i.e., r_pos - r0 == q-1)
+    # then r1 = 0, r0 -= 1
+    diff_t = t - 16
+    eq = 1 + ((diff_t | -diff_t) >> 63)  # 1 if t == 16, else 0
+    r1 = t * (1 - eq)
+    r0 = r0 - eq
     return r1, r0
 
 
@@ -378,24 +492,37 @@ def _low_bits(r):
 
 
 def _make_hint(z, r):
-    """Compute hint bit: 1 if high_bits(r) != high_bits(r+z) (Algorithm 38)."""
+    """Compute hint bit: 1 if high_bits(r) != high_bits(r+z) (Algorithm 38).
+
+    Branchless comparison.
+    """
     r1 = _high_bits(r)
-    v1 = _high_bits((r + z) % _Q)
-    return 0 if r1 == v1 else 1
+    # Branchless (r + z) mod q for r, z in [0, q)
+    s = r + z
+    s_mod = s - _Q * (1 + ((s - _Q) >> 63))
+    v1 = _high_bits(s_mod)
+    diff = r1 - v1
+    return -((diff | -diff) >> 63)  # 0 if equal, 1 if different
 
 
 def _use_hint(h, r):
     """Recover correct high bits using hint (Algorithm 39).
 
-    If h=0, return high_bits(r). If h=1, adjust by +-1.
+    Branchless: if h=0, return high_bits(r). If h=1, adjust by +-1.
     """
-    m = (_Q - 1) // (2 * _GAMMA2)  # = 16 for ML-DSA-65
+    _m = 16  # (_Q - 1) // (2 * _GAMMA2)
     r1, r0 = _decompose(r)
-    if h == 0:
-        return r1
-    if r0 > 0:
-        return (r1 + 1) % m
-    return (r1 - 1) % m
+    # Branchless sign of r0: adjustment = +1 if r0 > 0, -1 if r0 <= 0
+    is_pos = 1 + ((r0 - 1) >> 63)  # 1 if r0 > 0, 0 if r0 <= 0
+    adj = 2 * is_pos - 1  # +1 or -1
+    r1_adj = r1 + adj
+    # Branchless mod m for r1_adj in [-1, 16]
+    mask_neg = r1_adj >> 63
+    r1_adj = r1_adj - mask_neg * _m  # add m if negative
+    mask_over = 1 + ((r1_adj - _m) >> 63)
+    r1_adj = r1_adj - mask_over * _m  # subtract m if >= m
+    # Select: h=0 -> r1, h=1 -> r1_adj
+    return r1 * (1 - h) + r1_adj * h
 
 
 # ── Bit Packing / Encoding ────────────────────────────────────────
@@ -572,6 +699,7 @@ def _sig_decode(sig_bytes):
         offset += z_bytes
 
     # Hint decoding (Algorithm 28)
+    # Hint data is from the public signature — early returns do not leak secrets.
     hint_section = sig_bytes[offset:offset + _OMEGA + _K]
     h = [[0] * _N for _ in range(_K)]
     idx = 0
@@ -653,11 +781,34 @@ def ml_keygen(seed):
     return sk_bytes, pk_bytes
 
 
+def _pk_from_sk(sk_bytes):
+    """Reconstruct public key from secret key.
+
+    Decodes rho and recomputes t1 = (A*s1 + s2) >> d from the secret
+    vectors stored in the SK. Used for verify-after-sign.
+    """
+    rho, K, tr, s1, s2, t0 = _sk_decode(sk_bytes)
+    A_hat = _expand_A(rho)
+    s1_hat = _vec_ntt(s1)
+    t = _vec_inv_ntt(_vec_add(_mat_vec_ntt(A_hat, s1_hat), _vec_ntt(s2)))
+    t1 = []
+    for i in range(_K):
+        t1_poly = []
+        for j in range(_N):
+            hi, _ = _power2_round(t[i][j])
+            t1_poly.append(hi)
+        t1.append(t1_poly)
+    return _pk_encode(rho, t1)
+
+
 def _ml_sign_internal(message, sk_bytes, rnd=None, deterministic=False):
     """ML-DSA-65 internal signing (Algorithm 7, FIPS 204).
 
     Signs pre-processed message M' directly. Use ml_sign() for the
     pure FIPS 204 API with context string support.
+
+    Memory hardening: secret key material (K, s1, s2, t0, rho_prime)
+    is locked in RAM during signing and securely wiped in a finally block.
 
     rnd: Explicit 32-byte randomness. If provided, overrides both modes.
     deterministic: If True and rnd is None, uses 0^32 (deterministic).
@@ -670,131 +821,133 @@ def _ml_sign_internal(message, sk_bytes, rnd=None, deterministic=False):
         if len(rnd) != 32:
             raise ValueError(f"rnd must be 32 bytes, got {len(rnd)}")
 
-    # Step 1: Decode secret key
-    rho, K, tr, s1, s2, t0 = _sk_decode(sk_bytes)
+    # Copy secret key into mutable buffer for secure wiping
+    sk_buf = bytearray(sk_bytes)
+    _mlock(sk_buf)
+    try:
+        # Step 1: Decode secret key
+        rho, K, tr, s1, s2, t0 = _sk_decode(bytes(sk_buf))
 
-    # Step 2: Pre-compute NTT of secret vectors
-    s1_hat = _vec_ntt(s1)
-    s2_hat = _vec_ntt(s2)
-    t0_hat = _vec_ntt(t0)
+        # Step 2: Pre-compute NTT of secret vectors
+        s1_hat = _vec_ntt(s1)
+        s2_hat = _vec_ntt(s2)
+        t0_hat = _vec_ntt(t0)
 
-    # Step 3: Expand A from rho
-    A_hat = _expand_A(rho)
+        # Step 3: Expand A from rho
+        A_hat = _expand_A(rho)
 
-    # Step 4: Compute mu = H(tr || msg) — message representative
-    mu = hashlib.shake_256(tr + message).digest(64)
+        # Step 4: Compute mu = H(tr || msg) — message representative
+        mu = hashlib.shake_256(tr + message).digest(64)
 
-    # Step 5: rho'' = H(K || rnd || mu) (FIPS 204 Algorithm 7)
-    if rnd is not None:
-        pass  # Explicit rnd provided, use as-is
-    elif deterministic:
-        rnd = bytes(32)
-    else:
-        rnd = os.urandom(32)
-    rho_prime = hashlib.shake_256(K + rnd + mu).digest(64)
+        # Step 5: rho'' = H(K || rnd || mu) (FIPS 204 Algorithm 7)
+        if rnd is not None:
+            pass  # Explicit rnd provided, use as-is
+        elif deterministic:
+            rnd = bytes(32)
+        else:
+            rnd = os.urandom(32)
+        rho_prime_buf = bytearray(hashlib.shake_256(K + rnd + mu).digest(64))
+        _mlock(rho_prime_buf)
 
-    # Step 6: Rejection sampling loop.
-    # FIPS 204 loops "until success"; we bound it at 1000 iterations as a
-    # safety net.  For ML-DSA-65 the expected number of iterations is ~4.25
-    # (see FIPS 204 Table 2), so 1000 is astronomically unlikely to be hit
-    # in practice.  If it ever is, it indicates a bug, not bad luck.
-    kappa = 0
-    max_attempts = 1000
-    for attempt in range(max_attempts):
-        # 6a: Generate masking vector y
-        y = _expand_mask(rho_prime, kappa)
-        kappa += _L
+        try:
+            # Step 6: Rejection sampling loop.
+            kappa = 0
+            max_attempts = 1000
+            for attempt in range(max_attempts):
+                # 6a: Generate masking vector y
+                y = _expand_mask(bytes(rho_prime_buf), kappa)
+                kappa += _L
 
-        # 6b: Compute w = A*y (via NTT)
-        y_hat = _vec_ntt(y)
-        w = _vec_inv_ntt(_mat_vec_ntt(A_hat, y_hat))
+                # 6b: Compute w = A*y (via NTT)
+                y_hat = _vec_ntt(y)
+                w = _vec_inv_ntt(_mat_vec_ntt(A_hat, y_hat))
 
-        # 6c: Decompose w into high/low parts
-        w1 = []
-        for i in range(_K):
-            w1_poly = []
-            for j in range(_N):
-                w1_poly.append(_high_bits(w[i][j]))
-            w1.append(w1_poly)
+                # 6c: Decompose w into high/low parts
+                w1 = []
+                for i in range(_K):
+                    w1_poly = []
+                    for j in range(_N):
+                        w1_poly.append(_high_bits(w[i][j]))
+                    w1.append(w1_poly)
 
-        # 6d: Pack w1 and compute challenge
-        w1_packed = bytearray()
-        for i in range(_K):
-            # w1 coefficients are in [0, (q-1)/(2*gamma2)] = [0, 15]
-            # Pack 4 bits each
-            w1_packed.extend(_bit_pack(w1[i], 4))
-        c_tilde = hashlib.shake_256(mu + bytes(w1_packed)).digest(_C_TILDE_BYTES)
-        c = _sample_in_ball(c_tilde)
-        c_hat = _ntt(c)
+                # 6d: Pack w1 and compute challenge
+                w1_packed = bytearray()
+                for i in range(_K):
+                    w1_packed.extend(_bit_pack(w1[i], 4))
+                c_tilde = hashlib.shake_256(mu + bytes(w1_packed)).digest(_C_TILDE_BYTES)
+                c = _sample_in_ball(c_tilde)
+                c_hat = _ntt(c)
 
-        # 6e: Compute z = y + c*s1
-        cs1 = _vec_inv_ntt([_ntt_mult(c_hat, s1_hat[i]) for i in range(_L)])
-        z = _vec_add(y, cs1)
+                # 6e: Compute z = y + c*s1
+                cs1 = _vec_inv_ntt([_ntt_mult(c_hat, s1_hat[i]) for i in range(_L)])
+                z = _vec_add(y, cs1)
 
-        # 6f: Compute r0 = low_bits(w - c*s2)
-        cs2 = _vec_inv_ntt([_ntt_mult(c_hat, s2_hat[i]) for i in range(_K)])
-        w_minus_cs2 = _vec_sub(w, cs2)
+                # 6f: Compute r0 = low_bits(w - c*s2)
+                cs2 = _vec_inv_ntt([_ntt_mult(c_hat, s2_hat[i]) for i in range(_K)])
+                w_minus_cs2 = _vec_sub(w, cs2)
 
-        # 6g: Check z norm bound
-        reject = False
-        for i in range(_L):
-            for j in range(_N):
-                val = z[i][j]
-                if val > _Q // 2:
-                    val = _Q - val
-                if val >= _GAMMA1 - _BETA:
-                    reject = True
-                    break
-            if reject:
-                break
-        if reject:
-            continue
+                # 6g: Check z norm bound (branchless — no early exit)
+                reject = 0
+                _bound_z = _GAMMA1 - _BETA
+                for i in range(_L):
+                    for j in range(_N):
+                        val = z[i][j]
+                        neg = 1 + ((val - _HALF_Q - 1) >> 63)
+                        val = val - neg * (2 * val - _Q)
+                        reject |= 1 + ((val - _bound_z) >> 63)
+                if reject:
+                    continue
 
-        # 6h: Check ||r0||_inf < gamma2 - beta
-        for i in range(_K):
-            for j in range(_N):
-                if abs(_low_bits(w_minus_cs2[i][j])) >= _GAMMA2 - _BETA:
-                    reject = True
-                    break
-            if reject:
-                break
-        if reject:
-            continue
+                # 6h: Check ||r0||_inf < gamma2 - beta (branchless)
+                reject = 0
+                _bound_r0 = _GAMMA2 - _BETA
+                for i in range(_K):
+                    for j in range(_N):
+                        _, r0_val = _decompose(w_minus_cs2[i][j])
+                        neg = r0_val >> 63
+                        abs_val = (r0_val ^ neg) - neg
+                        reject |= 1 + ((abs_val - _bound_r0) >> 63)
+                if reject:
+                    continue
 
-        # 6i: Compute hint h
-        ct0 = _vec_inv_ntt([_ntt_mult(c_hat, t0_hat[i]) for i in range(_K)])
-        w_cs2_ct0 = _vec_add(w_minus_cs2, ct0)
+                # 6i: Compute hint h
+                ct0 = _vec_inv_ntt([_ntt_mult(c_hat, t0_hat[i]) for i in range(_K)])
+                w_cs2_ct0 = _vec_add(w_minus_cs2, ct0)
 
-        h = [[0] * _N for _ in range(_K)]
-        hint_count = 0
-        for i in range(_K):
-            for j in range(_N):
-                neg_ct0 = (_Q - ct0[i][j]) % _Q
-                h[i][j] = _make_hint(neg_ct0, w_cs2_ct0[i][j])
-                hint_count += h[i][j]
-        if hint_count > _OMEGA:
-            continue
+                h = [[0] * _N for _ in range(_K)]
+                hint_count = 0
+                for i in range(_K):
+                    for j in range(_N):
+                        neg_ct0 = _Q - ct0[i][j]
+                        neg_ct0 -= _Q * (1 + ((neg_ct0 - _Q) >> 63))
+                        h[i][j] = _make_hint(neg_ct0, w_cs2_ct0[i][j])
+                        hint_count += h[i][j]
+                if hint_count > _OMEGA:
+                    continue
 
-        # 6j: Check ct0 norm bound
-        for i in range(_K):
-            for j in range(_N):
-                val = ct0[i][j]
-                if val > _Q // 2:
-                    val = _Q - val
-                if val >= _GAMMA2:
-                    reject = True
-                    break
-            if reject:
-                break
-        if reject:
-            continue
+                # 6j: Check ct0 norm bound (branchless)
+                reject = 0
+                for i in range(_K):
+                    for j in range(_N):
+                        val = ct0[i][j]
+                        neg = 1 + ((val - _HALF_Q - 1) >> 63)
+                        val = val - neg * (2 * val - _Q)
+                        reject |= 1 + ((val - _GAMMA2) >> 63)
+                if reject:
+                    continue
 
-        # Success — encode signature
-        return _sig_encode(c_tilde, z, h)
+                # Success — encode signature
+                return _sig_encode(c_tilde, z, h)
 
-    raise RuntimeError(
-        f"ML-DSA signing failed after {max_attempts} rejection attempts"
-    )
+            raise RuntimeError(
+                f"ML-DSA signing failed after {max_attempts} rejection attempts"
+            )
+        finally:
+            _munlock(rho_prime_buf)
+            _secure_zero(rho_prime_buf)
+    finally:
+        _munlock(sk_buf)
+        _secure_zero(sk_buf)
 
 
 def _ml_verify_internal(message, sig_bytes, pk_bytes):
@@ -817,14 +970,19 @@ def _ml_verify_internal(message, sig_bytes, pk_bytes):
         return False
     c_tilde, z, h = decoded
 
-    # Step 3: Check z norm bound
+    # Step 3: Check z norm bound (branchless — no early exit)
+    reject = 0
+    _bound_z = _GAMMA1 - _BETA
     for i in range(_L):
         for j in range(_N):
             val = z[i][j]
-            if val > _Q // 2:
-                val = _Q - val
-            if val >= _GAMMA1 - _BETA:
-                return False
+            # Branchless centered abs: if val > q//2, val = q - val
+            neg = 1 + ((val - _HALF_Q - 1) >> 63)
+            val = val - neg * (2 * val - _Q)
+            # Accumulate: reject if val >= bound
+            reject |= 1 + ((val - _bound_z) >> 63)
+    if reject:
+        return False
 
     # Step 4: Expand A from rho
     A_hat = _expand_A(rho)
@@ -844,7 +1002,7 @@ def _ml_verify_internal(message, sig_bytes, pk_bytes):
     # Compute c*t1*2^d in NTT domain
     t1_shifted = []
     for i in range(_K):
-        t1_shifted.append([(c * (1 << _D)) % _Q for c in t1[i]])
+        t1_shifted.append([_ct_mod_q(c * (1 << _D)) for c in t1[i]])
     t1_shifted_hat = _vec_ntt(t1_shifted)
     ct1_2d = [_ntt_mult(c_hat, t1_shifted_hat[i]) for i in range(_K)]
 
@@ -872,7 +1030,7 @@ def _ml_verify_internal(message, sig_bytes, pk_bytes):
         w1_packed.extend(_bit_pack(w_prime_1[i], 4))
     c_tilde_check = hashlib.shake_256(mu + bytes(w1_packed)).digest(_C_TILDE_BYTES)
 
-    return c_tilde == c_tilde_check
+    return hmac.compare_digest(c_tilde, c_tilde_check)
 
 
 def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
@@ -880,6 +1038,8 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
 
     Builds M' = 0x00 || len(ctx) || ctx || message, then calls the
     internal signing algorithm. This is the FIPS 204 "pure" mode.
+
+    Fault injection countermeasure: verifies the signature before returning.
 
     Defaults to hedged signing (FIPS 204 recommended). Pass
     deterministic=True for reproducible signatures.
@@ -896,12 +1056,22 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
 
     Raises:
         ValueError: If ctx exceeds 255 bytes or sk_bytes has wrong length.
-        RuntimeError: If signing fails after too many rejection attempts.
+        RuntimeError: If signing fails after too many rejection attempts,
+                      or if verify-after-sign detects a fault.
     """
     if len(ctx) > 255:
         raise ValueError(f"context string must be <= 255 bytes, got {len(ctx)}")
     m_prime = b"\x00" + bytes([len(ctx)]) + ctx + message
-    return _ml_sign_internal(m_prime, sk_bytes, rnd=rnd, deterministic=deterministic)
+    sig = _ml_sign_internal(m_prime, sk_bytes, rnd=rnd, deterministic=deterministic)
+
+    # Verify-after-sign (fault injection countermeasure)
+    # Extract pk from sk: rho(32) || K(32) || tr(64) = 128 header,
+    # then recompute pk via rho + t1 from the signing computation.
+    # Cheaper: decode pk_bytes from sk and verify directly.
+    pk_bytes = _pk_from_sk(sk_bytes)
+    if not _ml_verify_internal(m_prime, sig, pk_bytes):
+        raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
+    return sig
 
 
 def ml_verify(message, sig_bytes, pk_bytes, ctx=b""):

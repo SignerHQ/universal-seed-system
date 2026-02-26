@@ -29,17 +29,50 @@ Notes:
     - Signing defaults to hedged mode (addrnd generated via os.urandom) as
       recommended by FIPS 205. Pass deterministic=True for the deterministic
       variant (uses PK.seed as opt_rand).
-    - NOT constant-time: Python branching and hash-call patterns may leak
-      timing information. For deployments where side-channel attacks are a
-      concern, use a vetted constant-time C/Rust implementation instead.
-      SLH-DSA is inherently more side-channel-friendly than lattice schemes
-      since its security rests on hash functions, not secret-dependent
-      polynomial arithmetic.
+    - Best-effort constant-time: Merkle tree traversals use branchless
+      byte-order swaps, and index splitting avoids conditional shifts.
+      WOTS+ chain length varies by message digest (public data), so
+      variable-iteration loops do not leak secret key material.
 """
 
 import hashlib
+import hmac
 import os
 import struct
+
+# ── Secure memory utilities (libsodium-backed) ────────────────
+_HAS_SODIUM = False
+try:
+    from nacl._sodium import ffi as _ffi, lib as _lib
+    _HAS_SODIUM = True
+except ImportError:
+    pass
+
+
+def _secure_zero(buf):
+    """Securely wipe a mutable buffer (bytearray / memoryview)."""
+    if not isinstance(buf, (bytearray, memoryview)):
+        return
+    n = len(buf)
+    if n == 0:
+        return
+    if _HAS_SODIUM:
+        _lib.sodium_memzero(_ffi.from_buffer(buf), n)
+    else:
+        for i in range(n):
+            buf[i] = 0
+
+
+def _mlock(buf):
+    """Lock memory pages to prevent swapping to disk."""
+    if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
+        _lib.sodium_mlock(_ffi.from_buffer(buf), len(buf))
+
+
+def _munlock(buf):
+    """Unlock memory pages (also zeros the region)."""
+    if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
+        _lib.sodium_munlock(_ffi.from_buffer(buf), len(buf))
 
 # ── SLH-DSA-SHAKE-128s Parameters (FIPS 205 Table 2) ─────────────
 
@@ -386,7 +419,7 @@ def _ht_verify(msg, sig_ht, pk_seed, idx_tree, idx_leaf, pk_root):
 
         node = _xmss_root_from_sig(idx_leaf, sig_tmp, auth_tmp, node, pk_seed, adrs)
 
-    return node == pk_root
+    return hmac.compare_digest(node, pk_root)
 
 
 def _xmss_root_from_sig(idx, sig, auth, msg, pk_seed, adrs):
@@ -400,18 +433,19 @@ def _xmss_root_from_sig(idx, sig, auth, msg, pk_seed, adrs):
     _adrs_set_keypair(wots_adrs, idx)
     node = _wots_pk_from_sig(sig, msg, pk_seed, wots_adrs)
 
-    # Walk up the tree using auth path
+    # Walk up the tree using auth path (branchless byte-order swap)
     tree_adrs = _adrs_copy(adrs)
     _adrs_set_type(tree_adrs, _ADRS_TYPE_TREE)
     for j in range(_HP):
         _adrs_set_tree_height(tree_adrs, j + 1)
+        _adrs_set_tree_index(tree_adrs, idx >> (j + 1))
         auth_j = auth[j * _N:(j + 1) * _N]
-        if (idx >> j) & 1 == 0:
-            _adrs_set_tree_index(tree_adrs, idx >> (j + 1))
-            node = _H(pk_seed, tree_adrs, node + auth_j)
-        else:
-            _adrs_set_tree_index(tree_adrs, idx >> (j + 1))
-            node = _H(pk_seed, tree_adrs, auth_j + node)
+        # Branchless: bit==0 -> H(node||auth), bit==1 -> H(auth||node)
+        bit = (idx >> j) & 1
+        # Constant-time select: left = node if bit==0 else auth_j
+        left = bytes(n ^ (bit * (n ^ a)) for n, a in zip(node, auth_j))
+        right = bytes(a ^ (bit * (a ^ n)) for n, a in zip(node, auth_j))
+        node = _H(pk_seed, tree_adrs, left + right)
     return node
 
 
@@ -491,22 +525,22 @@ def _fors_pk_from_sig(sig_fors, md, pk_seed, adrs):
         _adrs_set_tree_index(node_adrs, tree_index)
         node = _F(pk_seed, node_adrs, sk)
 
-        # Walk up the tree (Algorithm 17 step-by-step parent indexing)
+        # Walk up the tree (branchless byte-order swap + parent index)
         for j in range(_A):
             auth_j = sig_fors[off:off + _N]
             off += _N
 
             parent_adrs = _adrs_copy(adrs)
             _adrs_set_tree_height(parent_adrs, j + 1)
-
-            if ((idx >> j) & 1) == 0:
-                tree_index >>= 1
-                _adrs_set_tree_index(parent_adrs, tree_index)
-                node = _H(pk_seed, parent_adrs, node + auth_j)
-            else:
-                tree_index = (tree_index - 1) >> 1
-                _adrs_set_tree_index(parent_adrs, tree_index)
-                node = _H(pk_seed, parent_adrs, auth_j + node)
+            bit = (idx >> j) & 1
+            # Branchless parent index: bit==0 -> tree_index>>1,
+            # bit==1 -> (tree_index-1)>>1
+            tree_index = (tree_index - bit) >> 1
+            _adrs_set_tree_index(parent_adrs, tree_index)
+            # Branchless byte-order swap
+            left = bytes(n ^ (bit * (n ^ a)) for n, a in zip(node, auth_j))
+            right = bytes(a ^ (bit * (a ^ n)) for n, a in zip(node, auth_j))
+            node = _H(pk_seed, parent_adrs, left + right)
 
         roots += node
 
@@ -518,16 +552,24 @@ def _fors_pk_from_sig(sig_fors, md, pk_seed, adrs):
 
 
 def _md_to_indices(md):
-    """Split message digest into k indices of a bits each."""
+    """Split message digest into k indices of a bits each. Branchless."""
     indices = []
     bits = int.from_bytes(md[:_MD_BYTES], "big")
     total_bits = _MD_BYTES * 8
+    _mask = (1 << _A) - 1
     for i in range(_K):
         shift = total_bits - (i + 1) * _A
-        if shift >= 0:
-            idx = (bits >> shift) & ((1 << _A) - 1)
-        else:
-            idx = (bits << (-shift)) & ((1 << _A) - 1)
+        # Branchless: always right-shift, pad bits left if shift < 0
+        # For SLH-DSA-SHAKE-128s: total_bits=168, K*A=168, so shift
+        # ranges from 156 down to 0 — never negative. But handle
+        # generically for safety.
+        is_neg = shift >> 63  # -1 if negative, 0 if non-negative
+        abs_shift = (shift ^ is_neg) - is_neg  # branchless abs
+        # Right-shift when shift >= 0, left-shift when shift < 0
+        idx_pos = (bits >> abs_shift) & _mask
+        idx_neg = (bits << abs_shift) & _mask
+        # Select: is_neg==0 -> idx_pos, is_neg==-1 -> idx_neg
+        idx = idx_pos ^ ((is_neg) & (idx_pos ^ idx_neg))
         indices.append(idx)
     return indices
 
@@ -569,6 +611,9 @@ def _slh_sign_internal(message, sk_bytes, addrnd=None, deterministic=False):
     Signs pre-processed message M' directly. Use slh_sign() for the
     pure FIPS 205 API with context string support.
 
+    Memory hardening: secret key material is locked in RAM during signing
+    and securely wiped in a finally block.
+
     addrnd: Explicit n-byte randomness. If provided, overrides both modes.
     deterministic: If True and addrnd is None, uses PK.seed (deterministic).
                    If False and addrnd is None, generates os.urandom(n) (hedged).
@@ -580,50 +625,59 @@ def _slh_sign_internal(message, sk_bytes, addrnd=None, deterministic=False):
         if len(addrnd) != _N:
             raise ValueError(f"addrnd must be {_N} bytes, got {len(addrnd)}")
 
-    sk_seed = sk_bytes[:_N]
-    sk_prf = sk_bytes[_N:2*_N]
-    pk_seed = sk_bytes[2*_N:3*_N]
-    pk_root = sk_bytes[3*_N:4*_N]
+    # Copy secret components into mutable buffers for secure wiping
+    sk_seed_buf = bytearray(sk_bytes[:_N])
+    sk_prf_buf = bytearray(sk_bytes[_N:2*_N])
+    _mlock(sk_seed_buf)
+    _mlock(sk_prf_buf)
 
-    # Step 1: Randomizer R (deterministic or hedged, FIPS 205 Section 10.2.1)
-    if addrnd is not None:
-        opt_rand = addrnd
-    elif deterministic:
-        opt_rand = pk_seed
-    else:
-        opt_rand = os.urandom(_N)
-    R = _PRF_msg(sk_prf, opt_rand, message)
+    try:
+        pk_seed = sk_bytes[2*_N:3*_N]
+        pk_root = sk_bytes[3*_N:4*_N]
 
-    # Step 2: Hash message to get digest
-    digest = _H_msg(R, pk_seed, pk_root, message)
+        # Step 1: Randomizer R (deterministic or hedged, FIPS 205 Section 10.2.1)
+        if addrnd is not None:
+            opt_rand = addrnd
+        elif deterministic:
+            opt_rand = pk_seed
+        else:
+            opt_rand = os.urandom(_N)
+        R = _PRF_msg(bytes(sk_prf_buf), opt_rand, message)
 
-    # Step 3: Split digest into (md, idx_tree, idx_leaf)
-    md = digest[:_MD_BYTES]
-    idx_tree_bytes = digest[_MD_BYTES:_MD_BYTES + _IDX_TREE_BYTES]
-    idx_leaf_bytes = digest[_MD_BYTES + _IDX_TREE_BYTES:]
+        # Step 2: Hash message to get digest
+        digest = _H_msg(R, pk_seed, pk_root, message)
 
-    idx_tree = int.from_bytes(idx_tree_bytes, "big")
-    # Mask to valid tree range: h - h/d bits
-    idx_tree &= (1 << (_FULL_H - _HP)) - 1
-    idx_leaf = int.from_bytes(idx_leaf_bytes, "big")
-    idx_leaf &= (1 << _HP) - 1
+        # Step 3: Split digest into (md, idx_tree, idx_leaf)
+        md = digest[:_MD_BYTES]
+        idx_tree_bytes = digest[_MD_BYTES:_MD_BYTES + _IDX_TREE_BYTES]
+        idx_leaf_bytes = digest[_MD_BYTES + _IDX_TREE_BYTES:]
 
-    # Step 4: FORS signature
-    fors_adrs = _adrs_new()
-    _adrs_set_layer(fors_adrs, 0)
-    _adrs_set_tree(fors_adrs, idx_tree)
-    _adrs_set_type(fors_adrs, _ADRS_TYPE_FORS_TREE)
-    _adrs_set_keypair(fors_adrs, idx_leaf)
-    sig_fors = _fors_sign(md, sk_seed, pk_seed, fors_adrs)
+        idx_tree = int.from_bytes(idx_tree_bytes, "big")
+        idx_tree &= (1 << (_FULL_H - _HP)) - 1
+        idx_leaf = int.from_bytes(idx_leaf_bytes, "big")
+        idx_leaf &= (1 << _HP) - 1
 
-    # Step 5: FORS public key (input to hypertree)
-    pk_fors = _fors_pk_from_sig(sig_fors, md, pk_seed, fors_adrs)
+        # Step 4: FORS signature
+        fors_adrs = _adrs_new()
+        _adrs_set_layer(fors_adrs, 0)
+        _adrs_set_tree(fors_adrs, idx_tree)
+        _adrs_set_type(fors_adrs, _ADRS_TYPE_FORS_TREE)
+        _adrs_set_keypair(fors_adrs, idx_leaf)
+        sig_fors = _fors_sign(md, bytes(sk_seed_buf), pk_seed, fors_adrs)
 
-    # Step 6: Hypertree signature
-    sig_ht = _ht_sign(pk_fors, sk_seed, pk_seed, idx_tree, idx_leaf)
+        # Step 5: FORS public key (input to hypertree)
+        pk_fors = _fors_pk_from_sig(sig_fors, md, pk_seed, fors_adrs)
 
-    # Assemble signature: R || SIG_FORS || SIG_HT
-    return R + sig_fors + sig_ht
+        # Step 6: Hypertree signature
+        sig_ht = _ht_sign(pk_fors, bytes(sk_seed_buf), pk_seed, idx_tree, idx_leaf)
+
+        # Assemble signature: R || SIG_FORS || SIG_HT
+        return R + sig_fors + sig_ht
+    finally:
+        _munlock(sk_seed_buf)
+        _secure_zero(sk_seed_buf)
+        _munlock(sk_prf_buf)
+        _secure_zero(sk_prf_buf)
 
 
 def _slh_verify_internal(message, sig_bytes, pk_bytes):
@@ -678,6 +732,8 @@ def slh_sign(message, sk_bytes, ctx=b"", *, deterministic=False, addrnd=None):
     Builds M' = 0x00 || len(ctx) || ctx || message, then calls the
     internal signing algorithm. This is the FIPS 205 "pure" mode.
 
+    Fault injection countermeasure: verifies the signature before returning.
+
     Defaults to hedged signing (FIPS 205 recommended). Pass
     deterministic=True for reproducible signatures.
 
@@ -693,11 +749,18 @@ def slh_sign(message, sk_bytes, ctx=b"", *, deterministic=False, addrnd=None):
 
     Raises:
         ValueError: If ctx exceeds 255 bytes.
+        RuntimeError: If verify-after-sign detects a fault.
     """
     if len(ctx) > 255:
         raise ValueError(f"context string must be <= 255 bytes, got {len(ctx)}")
     m_prime = b"\x00" + bytes([len(ctx)]) + ctx + message
-    return _slh_sign_internal(m_prime, sk_bytes, addrnd=addrnd, deterministic=deterministic)
+    sig = _slh_sign_internal(m_prime, sk_bytes, addrnd=addrnd, deterministic=deterministic)
+
+    # Verify-after-sign (fault injection countermeasure)
+    pk_bytes = sk_bytes[2*_N:4*_N]  # PK.seed || PK.root embedded in SK
+    if not _slh_verify_internal(m_prime, sig, pk_bytes):
+        raise RuntimeError("SLH-DSA verify-after-sign failed (fault detected)")
+    return sig
 
 
 def slh_verify(message, sig_bytes, pk_bytes, ctx=b""):
