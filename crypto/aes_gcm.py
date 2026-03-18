@@ -27,6 +27,18 @@ References:
 
 import os
 
+try:
+    from .secure_wipe import wipe_all
+except ImportError:
+    try:
+        from crypto.secure_wipe import wipe_all
+    except ImportError:
+        def wipe_all(*bufs):
+            for b in bufs:
+                if isinstance(b, (bytearray, list)):
+                    for i in range(len(b)):
+                        b[i] = 0
+
 # ── Optional C backend ────────────────────────────────────────
 
 _HAS_CRYPTO = False
@@ -195,15 +207,6 @@ def _inc_ctr(ctr: bytearray) -> None:
 _MAX_PLAINTEXT_BYTES = (1 << 36) - 32
 
 
-try:
-    from crypto.secure_wipe import wipe_all as _wipe_buf
-except ImportError:
-    def _wipe_buf(*bufs):
-        for b in bufs:
-            if isinstance(b, (bytearray, list)):
-                for i in range(len(b)):
-                    b[i] = 0
-
 
 def _pad16(length: int) -> int:
     """Bytes needed to pad to next 16-byte boundary."""
@@ -289,7 +292,7 @@ def aes_gcm_encrypt(
 
         return bytes(ct) + bytes(tag)
     finally:
-        _wipe_buf(rk, H)
+        wipe_all(rk, H)
 
 
 def aes_gcm_decrypt(
@@ -379,4 +382,4 @@ def aes_gcm_decrypt(
 
         return bytes(plaintext)
     finally:
-        _wipe_buf(rk, H)
+        wipe_all(rk, H)

@@ -63,6 +63,21 @@ try:
 except ImportError:
     from crypto.argon2 import hash_secret_raw, Type as _Argon2Type
 
+try:
+    from .crypto.secure_wipe import wipe, wipe_all
+except ImportError:
+    try:
+        from crypto.secure_wipe import wipe, wipe_all
+    except ImportError:
+        # Minimal fallback if secure_wipe is not available
+        def wipe(obj):
+            if isinstance(obj, bytearray):
+                for i in range(len(obj)):
+                    obj[i] = 0
+        def wipe_all(*objs):
+            for o in objs:
+                wipe(o)
+
 # 256 base English words — one per icon position (0–255)
 _BASE_WORDS = (
     "eye", "ear", "nose", "mouth", "tongue", "bone", "tooth", "skull",
@@ -711,12 +726,7 @@ def _collect_entropy(n_bytes, extra_entropy=None):
     h = hashlib.sha512(pool)
 
     # Wipe the entropy pool now that it's been hashed
-    try:
-        from crypto.secure_wipe import wipe
-        wipe(pool)
-    except ImportError:
-        for i in range(len(pool)):
-            pool[i] = 0
+    wipe(pool)
 
     # Fold in one final secrets call keyed on the digest
     # This ensures the output is at minimum as strong as secrets alone
@@ -865,11 +875,7 @@ def _stretch(prk):
             type=_Argon2Type.ID,
         )
     finally:
-        try:
-            from crypto.secure_wipe import wipe
-            wipe(stage1)
-        except ImportError:
-            pass
+        wipe(stage1)
 
 
 def _to_indexes(seed):
