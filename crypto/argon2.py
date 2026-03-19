@@ -12,6 +12,8 @@ wrapper in this package auto-selects the faster backend when available.
 
 import struct
 
+from crypto.secure_wipe import wipe
+
 # ── Constants ────────────────────────────────────────────────────
 
 BLOCK_BYTES = 1024
@@ -385,6 +387,8 @@ def argon2id(password, salt, time_cost, memory_cost, parallelism, hash_len):
         raise ValueError("time_cost must be >= 1")
     if memory_cost < 8:
         raise ValueError("memory_cost must be >= 8")
+    if memory_cost > 4194304:
+        raise ValueError("memory_cost must be <= 4194304 (4 GiB)")
     if parallelism < 1:
         raise ValueError("parallelism must be >= 1")
     if hash_len < 4:
@@ -449,10 +453,13 @@ def argon2id(password, salt, time_cost, memory_cost, parallelism, hash_len):
 
     result = _argon2_hash(_store_block(final_block), T)
 
-    # Wipe all sensitive memory blocks
+    # Wipe all sensitive memory blocks — zero the underlying C memory
+    # of each int via ctypes.memset before dropping the reference
     for i in range(len(memory)):
+        wipe(memory[i])
         memory[i] = 0
     for i in range(len(final_block)):
+        wipe(final_block[i])
         final_block[i] = 0
 
     return result
@@ -494,6 +501,9 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
     Uses the C library (argon2-cffi) when available, otherwise falls
     back to the pure Python implementation above.
     """
+    if memory_cost > 4194304:
+        raise ValueError("memory_cost must be <= 4194304 (4 GiB)")
+
     if _cffi_hash is not None:
         return _cffi_hash(
             secret=secret, salt=salt, time_cost=time_cost,

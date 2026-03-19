@@ -45,8 +45,41 @@ _IS_CPYTHON = hasattr(sys, "getrefcount")
 _INT_HEADER = sys.getsizeof(0) if _IS_CPYTHON else 0
 _BYTES_HEADER = (sys.getsizeof(b"") - 1) if _IS_CPYTHON else 0  # -1 for null terminator
 
+# Refcount ceiling: skip objects likely interned/cached by the runtime.
+# getrefcount(obj) itself adds 1, the caller's variable adds 1, and
+# wipe()'s parameter adds 1 = 3 baseline.  Allow 1 extra for transient
+# references (e.g., passed through a wrapper).  Anything above 4 almost
+# certainly means the runtime has cached/interned the object.
+_REFCOUNT_MAX = 4
 
-def wipe(obj) -> None:
+# ── Import-time layout validation ────────────────────────────────────
+#
+# Create canary objects, wipe them via our computed offsets, and verify
+# the data was actually zeroed.  If the offsets are wrong (e.g., a new
+# CPython version changed the struct layout) we disable ctypes wiping
+# entirely rather than risk writing to wrong memory.
+
+_LAYOUT_OK = False
+
+if _IS_CPYTHON:
+    try:
+        # -- int canary: 0xDEAD is outside the small-int cache
+        _canary_int = int.from_bytes(b"\xde\xad", "big")
+        _ci_size = sys.getsizeof(_canary_int) - _INT_HEADER
+        if _ci_size > 0:
+            ctypes.memset(id(_canary_int) + _INT_HEADER, 0, _ci_size)
+            if _canary_int == 0:
+                # -- bytes canary: len > 1 to avoid interned singletons
+                _canary_bytes = bytes(b"\xab\xcd\xef")
+                ctypes.memset(id(_canary_bytes) + _BYTES_HEADER, 0, len(_canary_bytes))
+                if _canary_bytes == b"\x00\x00\x00":
+                    _LAYOUT_OK = True
+        del _canary_int, _canary_bytes, _ci_size
+    except Exception:
+        _LAYOUT_OK = False
+
+
+def wipe(obj) -> bool:
     """Best-effort secure wipe of a Python int, bytes, bytearray, or str.
 
     For bytearray: zeros every byte in-place (always works, any Python).
@@ -54,44 +87,47 @@ def wipe(obj) -> None:
     For int: zeros the digit array via ctypes (CPython only).
     For str: zeros the character data via ctypes (CPython only).
 
-    Safe to call on None, 0, empty objects, or non-CPython — silently no-ops.
+    Returns True if the object was wiped, False if skipped.
+    Safe to call on None, 0, empty objects, or non-CPython — returns False.
     """
     if obj is None:
-        return
+        return False
 
     if isinstance(obj, bytearray):
         for i in range(len(obj)):
             obj[i] = 0
-        return
+        return True
 
-    if not _IS_CPYTHON:
-        return
+    if not _LAYOUT_OK:
+        return False
 
-    try:
-        if isinstance(obj, int):
-            # Skip cached small ints (singletons in CPython)
-            if -5 <= obj <= 256:
-                return
-            size = sys.getsizeof(obj) - _INT_HEADER
-            if size > 0:
-                ctypes.memset(id(obj) + _INT_HEADER, 0, size)
+    if isinstance(obj, int):
+        if -5 <= obj <= 256:
+            return False
+        size = sys.getsizeof(obj) - _INT_HEADER
+        if size > 0:
+            ctypes.memset(id(obj) + _INT_HEADER, 0, size)
+            return True
+        return False
 
-        elif isinstance(obj, bytes):
-            if not obj:
-                return
-            ctypes.memset(id(obj) + _BYTES_HEADER, 0, len(obj))
+    if isinstance(obj, bytes):
+        if len(obj) <= 1:
+            return False
+        if sys.getrefcount(obj) > _REFCOUNT_MAX:
+            return False
+        ctypes.memset(id(obj) + _BYTES_HEADER, 0, len(obj))
+        return True
 
-        elif isinstance(obj, str):
-            if not obj:
-                return
-            # CPython str: compact ASCII uses 1 byte/char, UCS-1 = 1, UCS-2 = 2, UCS-4 = 4
-            # sys.getsizeof(s) - sys.getsizeof("") gives the total data bytes
-            data_bytes = sys.getsizeof(obj) - sys.getsizeof("")
-            if data_bytes > 0:
-                ctypes.memset(id(obj) + sys.getsizeof(""), 0, data_bytes)
+    if isinstance(obj, str):
+        if not obj:
+            return False
+        data_bytes = sys.getsizeof(obj) - sys.getsizeof("")
+        if data_bytes > 0:
+            ctypes.memset(id(obj) + sys.getsizeof(""), 0, data_bytes)
+            return True
+        return False
 
-    except Exception:
-        pass  # Non-CPython, or layout changed — fail silently
+    return False
 
 
 def wipe_all(*objs) -> None:
@@ -118,18 +154,11 @@ def wipe_list(lst) -> None:
     """
     if lst is None:
         return
-    try:
-        for item in lst:
-            if isinstance(item, (list, bytearray)):
-                # Nested list (e.g., Argon2 block = list of ints)
-                if isinstance(item, list):
-                    for i in range(len(item)):
-                        wipe(item[i])
-                        item[i] = 0
-                else:
-                    wipe(item)
-            else:
-                wipe(item)
-        lst.clear()
-    except Exception:
-        pass
+    for item in lst:
+        if isinstance(item, list):
+            for i in range(len(item)):
+                wipe(item[i])
+                item[i] = 0
+        else:
+            wipe(item)
+    lst.clear()

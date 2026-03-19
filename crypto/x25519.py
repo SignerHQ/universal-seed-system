@@ -237,17 +237,27 @@ def _x25519_raw_bytes(sk, pk):
     """Compute raw X25519 DH without low-order exception.
 
     Always returns 32 bytes. Returns all-zeros for low-order inputs
-    instead of raising. Uses constant-time pure Python path to avoid
-    exception timing differences.
+    instead of raising. Used by hybrid KEM for constant-time decapsulation
+    (IND-CCA2: must not branch on validity of the classical component).
 
-    Used by hybrid KEM for constant-time decapsulation.
+    Prefers libsodium (constant-time C) over pure Python (variable-size
+    int timing leak is worse than any exception-path difference).
     """
-    result = _encode_u(_x25519_raw(sk, pk))
-    return result
+    if _HAS_NACL:
+        try:
+            return nacl.bindings.crypto_scalarmult(sk, pk)
+        except Exception:
+            return _ZERO_32
+    return _encode_u(_x25519_raw(sk, pk))
 
 
 def _x25519_raw_bytes_into(sk, pk, out):
     """Like _x25519_raw_bytes but writes into a mutable bytearray for secure wiping."""
-    result = _encode_u(_x25519_raw(sk, pk))
-    out[:] = result
+    if _HAS_NACL:
+        try:
+            out[:] = nacl.bindings.crypto_scalarmult(sk, pk)
+        except Exception:
+            out[:] = _ZERO_32
+        return out
+    out[:] = _encode_u(_x25519_raw(sk, pk))
     return out
