@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """ML-DSA-65 (Dilithium) — FIPS 204 post-quantum digital signature.
 

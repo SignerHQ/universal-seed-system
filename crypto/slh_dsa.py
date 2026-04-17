@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """SLH-DSA-SHAKE-128s (SPHINCS+) — FIPS 205 post-quantum digital signature.
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """
 Automated collision fixer for the Universal Quantum Seed.
@@ -29,8 +29,8 @@ LANGUAGES_DIR = os.path.join(PROJECT_DIR, "languages")
 sys.path.insert(0, PROJECT_DIR)
 
 # Import base words for priority resolution
-from languages.base import signer_universal_seed_base
-BASE_WORDS = {entry[2].lower(): entry[0] for entry in signer_universal_seed_base}
+from languages.base import lock_universal_seed_base
+BASE_WORDS = {entry[2].lower(): entry[0] for entry in lock_universal_seed_base}
 
 # Zero-width chars
 _INVISIBLE_CHARS = re.compile(

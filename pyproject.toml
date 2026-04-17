@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "The world's first quantum-safe visual + multilingual seed phrase system. Pure Python, zero dependencies."
 readme = "README.md"
 license = {text = "MIT"}
-authors = [{name = "Signer.io"}]
+authors = [{name = "Lock.com"}]
 requires-python = ">=3.9"
 keywords = [
     "quantum", "seed", "mnemonic", "post-quantum", "cryptography",
@@ -29,8 +29,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SignerHQ/universal-quantum-seed"
-Repository = "https://github.com/SignerHQ/universal-quantum-seed"
+Homepage = "https://github.com/madebylock/universal-quantum-seed"
+Repository = "https://github.com/madebylock/universal-quantum-seed"
 
 [tool.setuptools]
 packages = ["uqs", "uqs.crypto"]

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Pure-Python AES-256-GCM authenticated encryption (NIST SP 800-38D).
 

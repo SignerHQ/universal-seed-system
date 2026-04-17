@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 __version__ = "1.0"
 

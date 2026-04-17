@@ -30,7 +30,7 @@
 
 <br>
 
-*Screenshots from Signer's treasury app*
+*Screenshots from Lock's treasury app*
 
 <table>
 <tr>

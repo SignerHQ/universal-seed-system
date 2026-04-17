@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """
 Compile all language files into a single flat lookup dictionary.
@@ -249,9 +249,9 @@ def compile_lookup():
         print(f"  {label} ({lang_file}): {word_count} words")
 
     # Add emoji from base.py
-    from languages.base import signer_universal_seed_base
+    from languages.base import lock_universal_seed_base
     emoji_count = 0
-    for idx, emoji, _word in signer_universal_seed_base:
+    for idx, emoji, _word in lock_universal_seed_base:
         e_norm = normalize_emoji(emoji)
         if not e_norm:
             continue

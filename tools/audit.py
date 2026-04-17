@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Audit word lengths across all languages. Find indexes where shortest word is too long."""
 import sys, io, importlib, os

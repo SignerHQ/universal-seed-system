@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Hybrid X25519 + ML-KEM-768 key encapsulation mechanism.
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Hybrid Ed25519 + ML-DSA-65 digital signature scheme.
 

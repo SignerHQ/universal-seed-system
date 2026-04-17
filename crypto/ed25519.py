@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Pure-Python Ed25519 digital signatures (RFC 8032).
 

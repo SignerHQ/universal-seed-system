@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Universal Quantum Seed — generate or recover seeds using 256 visual icons."""
 
@@ -20,10 +20,10 @@ from PySide6.QtCore import Qt, QSize, QEvent, QPoint, QRect, Signal, QTimer
 from PySide6.QtGui import QPixmap, QIcon, QPainter, QPainterPath, QCursor
 
 from seed import generate_words, get_fingerprint, get_seed, get_entropy_bits, mouse_entropy, resolve, search, verify_randomness, get_languages, verify_checksum, get_profile
-from languages.base import signer_universal_seed_base
+from languages.base import lock_universal_seed_base
 
 ICONS_DIR = os.path.join(PROJECT_DIR, "visuals", "png")
-BASE_LOOKUP = {entry[0]: (entry[1], entry[2]) for entry in signer_universal_seed_base}
+BASE_LOOKUP = {entry[0]: (entry[1], entry[2]) for entry in lock_universal_seed_base}
 ICON_SIZE = 36
 
 _icon_cache = {}

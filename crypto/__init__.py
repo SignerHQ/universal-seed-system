@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Cryptography modules — classical, post-quantum, hybrid, and KDF.
 

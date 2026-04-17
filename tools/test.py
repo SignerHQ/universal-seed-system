@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Comprehensive test suite for all crypto modules.
 
@@ -1866,7 +1866,7 @@ _ARGON2_VECTORS = [
     {
         "name": "4 lanes (128 KiB, t=1, p=4)",
         "password": b"password123",
-        "salt": b"signer-salt-test",
+        "salt": b"lock-salt-test",
         "time_cost": 1,
         "memory_cost": 128,
         "parallelism": 4,
@@ -1876,7 +1876,7 @@ _ARGON2_VECTORS = [
     {
         "name": "4 lanes, 3 iterations (128 KiB, t=3, p=4)",
         "password": b"password123",
-        "salt": b"signer-salt-test",
+        "salt": b"lock-salt-test",
         "time_cost": 3,
         "memory_cost": 128,
         "parallelism": 4,

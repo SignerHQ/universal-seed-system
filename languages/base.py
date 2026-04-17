@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║  Signer Universal Quantum Seed                               ║
+║  Lock Universal Quantum Seed                                 ║
 ║  256 unique visuals · 32 words = 256-bit key                 ║
 ║                                                              ║
 ║  * Universal Language Support                                ║
@@ -8,7 +8,7 @@
 ╚══════════════════════════════════════════════════════════════╝
 """
 
-signer_universal_seed_base = [
+lock_universal_seed_base = [
 
     # ── BODY PARTS (0–14) ────────────────────────────────
     (  0, "👁️",  "eye"),

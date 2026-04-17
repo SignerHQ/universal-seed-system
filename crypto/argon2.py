@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Argon2id (RFC 9106) — Pure Python, zero dependencies.
 

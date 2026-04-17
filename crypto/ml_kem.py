@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """ML-KEM-768 (Kyber) — FIPS 203 post-quantum key encapsulation mechanism.
 

@@ -1,8 +1,8 @@
-# Copyright (c) 2026 Signer — MIT License
+# Copyright (c) 2026 Lock — MIT License
 
 """Universal Quantum Seed — 256 visual icons, 42 languages, 272-bit entropy.
 
-Drop-in package: copy or symlink this folder as `modules/seed/` in signer
+Drop-in package: copy or symlink this folder as `modules/seed/` in lock
 and all existing imports work unchanged.
 """
 
